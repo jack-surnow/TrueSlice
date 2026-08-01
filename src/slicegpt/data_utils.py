@@ -4,6 +4,7 @@
 import logging
 
 import datasets
+from datasets import load_from_disk
 import torch
 from torch.utils.data import DataLoader, Dataset, SubsetRandomSampler
 from transformers import PreTrainedTokenizerBase
@@ -22,7 +23,8 @@ def get_dataset(name: str) -> datasets.DatasetDict:
     logging.info(f"Loading dataset: {name}")
 
     ds_properties = {
-        "wikitext2": {"path": "wikitext", "config_name": "wikitext-2-raw-v1"},
+        # "wikitext2": {"path": "wikitext", "config_name": "wikitext-2-raw-v1"},
+        "wikitext2": {"path": "Salesforce/wikitext", "config_name": "wikitext-2-raw-v1"},
         "ptb": {"path": "ptb_text_only", "config_name": "penn_treebank"},
         "c4": {
             "path": "allenai/c4",
@@ -57,6 +59,13 @@ def get_dataset(name: str) -> datasets.DatasetDict:
 
     logging.info("Loading dataset done")
     return ds
+
+
+def get_dataset_from_prepacked(path: str) -> datasets.DatasetDict:
+        logging.info(f"Loading pre-packed dataset from {path}...")
+        packed_dict = load_from_disk(path)
+        logging.info("Loading pre-packed dataset done")
+        return packed_dict
 
 
 def prepare_test_dataloader(
@@ -101,6 +110,16 @@ def prepare_test_dataloader(
     test_ds = TestDataset(dataset, tokenizer, seqlen)
     loader = DataLoader(test_ds, batch_size=batch_size)
     logging.info(f"Preparing test dataloader done")
+    return loader
+
+
+def prepare_test_dataloader_from_prepacked(dataset: datasets.Dataset, batch_size: int = 1, nsamples: int = 128):
+    logging.info(f"Preparing pre-packed test dataloader")
+    logging.info("Pre-packed eval dataset detected. Bypassing tokenization...")
+    dataset.set_format(type="torch", columns=["input_ids", "attention_mask"])
+    dataset = dataset.select(range(nsamples))
+    loader = DataLoader(dataset, batch_size=batch_size)
+    logging.info(f"Preparing pre-packedtest dataloader done")
     return loader
 
 
@@ -185,3 +204,13 @@ def prepare_dataloader(
     loader = DataLoader(ds, batch_size=batch_size, sampler=sampler)
     logging.info(f"Preparing dataloader done")
     return loader
+
+
+def prepare_test_dataloader_from_prepacked(dataset: datasets.Dataset, batch_size: int = 1, nsamples: int = 128, seed=42) -> DataLoader[dict[str, torch.Tensor]]:
+    logging.info("Preparing pre-packeddataloader")
+    dataset.set_format(type="torch", columns=["input_ids", "attention_mask"])
+    torch.manual_seed(seed)
+    sampler = SubsetRandomSampler(torch.randperm(len(dataset))[:nsamples])
+    loader = DataLoader(dataset, batch_size=batch_size, sampler=sampler)
+    logging.info(f"Preparing pre-packed dataloader done")
+    return loader 
