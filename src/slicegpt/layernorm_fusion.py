@@ -11,7 +11,7 @@ from .model_adapter import ModelAdapter
 from .modules import RMSN
 
 
-def replace_layers(model_adapter: ModelAdapter, verbose: bool = True) -> None:
+def replace_layers(model_adapter: ModelAdapter, verbose: bool = True, slicing_method: str = 'slicegpt') -> None:
     """Replace layers with compressed versions.
 
     This adds a 'shortcut operation' to each block.
@@ -20,12 +20,22 @@ def replace_layers(model_adapter: ModelAdapter, verbose: bool = True) -> None:
     if verbose:
         logging.info("Replacing layers")
 
-    replace_modules(
-        model_adapter.model,
-        model_adapter.original_layer_type,
-        model_adapter.convert_layer_to_compressed_and_register_buffers,
-        replace_layers=True,
-    )
+    if slicing_method == 'slicegpt' or slicing_method == 'chunked':
+        replace_modules(
+            model_adapter.model,
+            model_adapter.original_layer_type,
+            model_adapter.convert_layer_to_compressed_and_register_buffers,
+            replace_layers=True,
+        )
+    elif slicing_method == 'global':
+        replace_modules(
+            model_adapter.model,
+            model_adapter.original_layer_type,
+            model_adapter.convert_layer_to_compressed_and_register_buffers_no_shortcut,
+            replace_layers=True,
+        )
+    else:
+        raise ValueError(f"Unknown slicing method: {slicing_method}")
 
     if verbose:
         logging.info("Replacing layers done")

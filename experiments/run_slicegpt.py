@@ -199,7 +199,7 @@ def slicing_main(args: argparse.Namespace) -> None:
         utils.cleanup_memory()
 
     # replace modules with compressible equivalents
-    layernorm_fusion.replace_layers(model_adapter)
+    layernorm_fusion.replace_layers(model_adapter, slicing_method=args.slicing_method)
 
     # fuse layernorms and add rotations to skip connections
     layernorm_fusion.fuse_modules(model_adapter)

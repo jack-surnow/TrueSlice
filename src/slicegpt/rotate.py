@@ -32,6 +32,13 @@ def slice_attention_inputs(layer_adapter: LayerAdapter, new_embedding_dimension:
     layer_adapter.layer.attn_shortcut_Q = nn.Parameter(layer_adapter.layer.attn_shortcut_Q[:new_embedding_dimension, :])
 
 
+def slice_attention_inputs_no_shortcut(layer_adapter: LayerAdapter, new_embedding_dimension: int) -> None:
+    # Slice the WQ, WK and WV matrices of the self-attention layer.
+    for W in layer_adapter.get_attention_inputs():
+        W.weight.data = W.weight.data[:, :new_embedding_dimension]
+        W.in_features = new_embedding_dimension
+
+
 def rotate_attention_output(layer_adapter: LayerAdapter, Q: torch.Tensor) -> None:
     # Rotate output matrix of the self-attention layer.
     W = layer_adapter.get_attention_output()
@@ -284,7 +291,6 @@ def global_rotate_and_slice_sequential(
     logging.info("global_rotate_and_slice_sequential: Setting up calibration data")
 
     model_adapter.model.eval()
-    dtype = next(iter(model_adapter.model.parameters())).dtype
 
     inps, args, kwargs, ignore_masks = [], [], [], []
     for batch in dataloader:
@@ -341,55 +347,34 @@ def global_rotate_and_slice_sequential(
     del C_global
     cleanup_memory()
 
-    # Rotating and slicing transformer layers
-    logging.info("global_rotate_and_slice_sequential: Rotating and slicing transformer layers")
+    # Rotating and slicing layers
+    logging.info("global_rotate_and_slice_sequential: Rotating and slicing layers")
 
     rotate_embeddings(model_adapter, Q_global)
     slice_embeddings(model_adapter, slicing_scheduler.get_embedding_dimensions())
 
-    for idx, layer_adapter in enumerate(tqdm(layers, unit="layer", desc="Slicing weights")):
+    global_dim = slicing_scheduler.get_embedding_dimensions()[0]
+
+    for layer_adapter in tqdm(layers, unit="layer", desc="Slicing weights"):
         layer = layer_adapter.layer
 
-        layer.attn_shortcut_Q = nn.Parameter(
-            torch.empty(model_adapter.hidden_size, model_adapter.hidden_size, dtype=dtype, device=config.device)
-        )
-        layer.mlp_shortcut_Q = nn.Parameter(
-            torch.empty(model_adapter.hidden_size, model_adapter.hidden_size, dtype=dtype, device=config.device)
-        )
-
         rotate_attention_inputs(layer_adapter, Q_global)
-        slice_attention_inputs(layer_adapter, slicing_scheduler.get_attention_input_dimension(idx))
+        slice_attention_inputs_no_shortcut(layer_adapter, global_dim)
 
         rotate_attention_output(layer_adapter, Q_global)
-        slice_attention_output(layer_adapter, slicing_scheduler.get_attention_output_dimension(idx, match_head_dim=False))
+        slice_attention_output(layer_adapter, global_dim)
 
         rotate_mlp_input(layer_adapter, Q_global)
-        slice_mlp_input(layer_adapter, slicing_scheduler.get_mlp_input_dimension(idx))
+        slice_mlp_input(layer_adapter, global_dim)
 
         rotate_mlp_output(layer_adapter, Q_global)
-        slice_mlp_output(layer_adapter, slicing_scheduler.get_mlp_output_dimension(idx))
-
-        d_attn_in = slicing_scheduler.get_attention_input_dimension(idx)
-        d_attn_out = slicing_scheduler.get_attention_output_dimension(idx, match_head_dim=False)
-        layer.attn_shortcut_Q = nn.Parameter(
-            torch.eye(n=d_attn_in, m=d_attn_out, dtype=dtype, device=config.device)
-        )
-
-        d_mlp_in = slicing_scheduler.get_mlp_input_dimension(idx)
-        d_mlp_out = slicing_scheduler.get_mlp_output_dimension(idx)
-        layer.mlp_shortcut_Q = nn.Parameter(
-            torch.eye(n=d_mlp_in, m=d_mlp_out, dtype=dtype, device=config.device)
-        )
+        slice_mlp_output(layer_adapter, global_dim)
 
         layer.to('cpu')
         cleanup_memory()
 
-    # Rotating and slicing the lm head
-    logging.info("global_rotate_and_slice_sequential: Rotating and slicing the lm head")
-
     rotate_head(model_adapter, Q_global)
-    if slicing_scheduler.do_slice_head:
-        slice_head(model_adapter, slicing_scheduler.get_head_dimension())
+    slice_head(model_adapter, global_dim)
 
     model_adapter.slicing_conf = slicing_scheduler.slicing_conf.clone()
 

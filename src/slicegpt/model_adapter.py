@@ -297,6 +297,18 @@ class ModelAdapter(ABC):
         compressed_layer.register_parameter('attn_shortcut_Q', None)
         return compressed_layer
 
+    @final
+    def convert_layer_to_compressed_and_register_buffers_no_shortcut(self, layer: Module, layer_idx: int | None) -> Module:
+        """
+        Replace the given layer with a compressed version of the layer. Also register the shortcut_Q matrices
+        to be used in Compressed transformer layer's forward() method to be updated during slicing.
+        """
+        compressed_layer = self.convert_layer_to_compressed(layer, layer_idx)
+        if not self.parallel_blocks:
+            compressed_layer.register_parameter('mlp_shortcut_Q', None)
+        compressed_layer.register_parameter('attn_shortcut_Q', None)
+        return compressed_layer
+
     def post_init(self, tokenizer: PreTrainedTokenizerBase) -> None:
         """
         This method is called after the model is initialized and all the properties are set.
