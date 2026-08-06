@@ -73,6 +73,13 @@ def slicing_arg_parser(interactive: bool = True) -> argparse.Namespace:
         help="Final orientation of the sliced weights.",
     )
     parser.add_argument(
+        "--slicing-method",
+        type=str,
+        default="slicegpt",
+        choices=["slicegpt", "global", "chunked"],
+        help="Method to use for calculating and applying PCA rotations across the residual stream.",
+    )
+    parser.add_argument(
         "--ppl-eval-seqlen", type=int, default=2048, help="Sequence length for evaluating the perplexity."
     )
     parser.add_argument("--ppl-eval-batch-size", type=int, default=8, help="Batch size for evaluating the perplexity.")
@@ -222,7 +229,7 @@ def slicing_main(args: argparse.Namespace) -> None:
     )
 
     scheduler = ConstSlicingScheduler(new_embedding_dimension)
-    rotate.rotate_and_slice(model_adapter, train_loader, scheduler, final_orientation=args.final_orientation)
+    rotate.rotate_and_slice(model_adapter, train_loader, scheduler, final_orientation=args.final_orientation, slicing_method=args.slicing_method)
 
     if args.save_dir:
         sliced_model_dir = pathlib.Path(args.save_dir)

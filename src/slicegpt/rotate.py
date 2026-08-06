@@ -127,14 +127,29 @@ def rotate_and_slice(
     slicing_scheduler: SlicingScheduler,
     apply_mask: bool = True,
     final_orientation: str = 'pca',
+    slicing_method: str = 'slicegpt'
 ) -> None:
     """
     Rotate and slice a model, with interleaved slicing and PCA calculations
     """
-    if model_adapter.parallel_blocks:
-        rotate_and_slice_parallel(model_adapter, dataloader, slicing_scheduler, apply_mask, final_orientation)
+    if slicing_method == 'slicegpt':
+        if model_adapter.parallel_blocks:
+            rotate_and_slice_parallel(model_adapter, dataloader, slicing_scheduler, apply_mask, final_orientation)
+        else:
+            rotate_and_slice_sequential(model_adapter, dataloader, slicing_scheduler, apply_mask, final_orientation)
+    elif slicing_method == 'global':
+        if model_adapter.parallel_blocks:
+            # global_rotate_and_slice_parallel(model_adapter, dataloader, slicing_scheduler, apply_mask, final_orientation)
+            raise NotImplementedError("global_rotate_and_slice_parallel is not yet implemented.")
+        else:
+            global_rotate_and_slice_sequential(model_adapter, dataloader, slicing_scheduler, apply_mask, final_orientation)
+    elif slicing_method == 'chunked':
+        if model_adapter.parallel_blocks:
+            raise NotImplementedError("chunked_rotate_and_slice_parallel is not yet implemented.")
+        else:
+            raise NotImplementedError("chunked_rotate_and_slice_sequential is not yet implemented.")
     else:
-        rotate_and_slice_sequential(model_adapter, dataloader, slicing_scheduler, apply_mask, final_orientation)
+        raise ValueError(f"Unknown slicing method: {slicing_method}")
 
 
 @torch.no_grad()
@@ -249,6 +264,136 @@ def rotate_and_slice_sequential(
     # update model's slicing config
     model_adapter.slicing_conf = slicing_scheduler.slicing_conf.clone()
     logging.info("Rotate and slice layers done")
+
+
+@torch.no_grad()
+def global_rotate_and_slice_sequential(
+    model_adapter: ModelAdapter,
+    dataloader: torch.utils.data.DataLoader[torch.Tensor],
+    slicing_scheduler: SlicingScheduler,
+    apply_mask: bool = True,
+    final_orientation: str = 'pca',
+) -> None:
+    """
+    Rotate and slice the provided model, with interleaved slicing and PCA calculations.
+
+    This method works for models where the MLP block is computed after the attention block.
+    """
+
+    # Set up calibration data
+    logging.info("global_rotate_and_slice_sequential: Setting up calibration data")
+
+    model_adapter.model.eval()
+    dtype = next(iter(model_adapter.model.parameters())).dtype
+
+    inps, args, kwargs, ignore_masks = [], [], [], []
+    for batch in dataloader:
+        inp_batch, args_batch, kwargs_batch = get_layer0_inputs(model_adapter, batch)
+        inps.append(inp_batch)
+        args.append(args_batch)
+        kwargs.append(kwargs_batch)
+        if apply_mask:
+            ignore_masks.append(batch["attention_mask"])
+
+    layers = model_adapter.get_layers()
+    slicing_scheduler.setup(hidden_size=model_adapter.hidden_size, layers_num=len(layers), parallel_blocks=False)
+
+    # Profiling model layers
+    logging.info("global_rotate_and_slice_sequential: Profiling model layers")
+
+    C_global = get_covariance(inps, ignore_masks)
+
+    for layer_adapter in tqdm(layers, unit="layer", desc="Accumulating Covariance"):
+        mlp_ln_inputs, layer_outputs = get_signals(layer_adapter, args, kwargs)
+
+        # Override with final layer
+        # C_global = get_covariance(mlp_ln_inputs, ignore_masks)
+        # C_global += get_covariance(layer_outputs, ignore_masks)
+
+        # Acculumate without normalization
+        C_global += get_covariance(mlp_ln_inputs, ignore_masks)
+        C_global += get_covariance(layer_outputs, ignore_masks)
+
+        # # Accumulate with normalization
+        # C_mlp = get_covariance(mlp_ln_inputs, ignore_masks)
+        # C_global += C_mlp / torch.trace(C_mlp)
+        # C_out = get_covariance(layer_outputs, ignore_masks)
+        # C_global += C_out / torch.trace(C_out)
+        
+        for i, out in enumerate(layer_outputs):
+            args[i] = layer_adapter.get_updated_args(out.cpu(), args[i])
+
+    # Calculating the global PCA
+    logging.info("global_rotate_and_slice_sequential: Calculating the global PCA")
+
+    damp = 0.01 * torch.mean(torch.diag(C_global))
+    diag = torch.arange(C_global.shape[-1]).to(device=config.device)
+    C_global[diag, diag] = C_global[diag, diag] + damp
+    X_eig = torch.linalg.eigh(C_global)
+    index = torch.argsort(X_eig[0], descending=True)
+    Q_global = X_eig[1][:, index]
+    Q_global = Q_global.to(device=config.device, dtype=torch.float64)
+    
+    if final_orientation == 'random':
+        R = random_orthogonal_upper_left(Q_global.shape[0], slicing_scheduler.get_embedding_dimensions()[0])
+        Q_global = Q_global @ R.to(Q_global.device)
+        
+    del C_global
+    cleanup_memory()
+
+    # Rotating and slicing transformer layers
+    logging.info("global_rotate_and_slice_sequential: Rotating and slicing transformer layers")
+
+    rotate_embeddings(model_adapter, Q_global)
+    slice_embeddings(model_adapter, slicing_scheduler.get_embedding_dimensions())
+
+    for idx, layer_adapter in enumerate(tqdm(layers, unit="layer", desc="Slicing weights")):
+        layer = layer_adapter.layer
+
+        layer.attn_shortcut_Q = nn.Parameter(
+            torch.empty(model_adapter.hidden_size, model_adapter.hidden_size, dtype=dtype, device=config.device)
+        )
+        layer.mlp_shortcut_Q = nn.Parameter(
+            torch.empty(model_adapter.hidden_size, model_adapter.hidden_size, dtype=dtype, device=config.device)
+        )
+
+        rotate_attention_inputs(layer_adapter, Q_global)
+        slice_attention_inputs(layer_adapter, slicing_scheduler.get_attention_input_dimension(idx))
+
+        rotate_attention_output(layer_adapter, Q_global)
+        slice_attention_output(layer_adapter, slicing_scheduler.get_attention_output_dimension(idx, match_head_dim=False))
+
+        rotate_mlp_input(layer_adapter, Q_global)
+        slice_mlp_input(layer_adapter, slicing_scheduler.get_mlp_input_dimension(idx))
+
+        rotate_mlp_output(layer_adapter, Q_global)
+        slice_mlp_output(layer_adapter, slicing_scheduler.get_mlp_output_dimension(idx))
+
+        d_attn_in = slicing_scheduler.get_attention_input_dimension(idx)
+        d_attn_out = slicing_scheduler.get_attention_output_dimension(idx, match_head_dim=False)
+        layer.attn_shortcut_Q = nn.Parameter(
+            torch.eye(n=d_attn_in, m=d_attn_out, dtype=dtype, device=config.device)
+        )
+
+        d_mlp_in = slicing_scheduler.get_mlp_input_dimension(idx)
+        d_mlp_out = slicing_scheduler.get_mlp_output_dimension(idx)
+        layer.mlp_shortcut_Q = nn.Parameter(
+            torch.eye(n=d_mlp_in, m=d_mlp_out, dtype=dtype, device=config.device)
+        )
+
+        layer.to('cpu')
+        cleanup_memory()
+
+    # Rotating and slicing the lm head
+    logging.info("global_rotate_and_slice_sequential: Rotating and slicing the lm head")
+
+    rotate_head(model_adapter, Q_global)
+    if slicing_scheduler.do_slice_head:
+        slice_head(model_adapter, slicing_scheduler.get_head_dimension())
+
+    model_adapter.slicing_conf = slicing_scheduler.slicing_conf.clone()
+
+    logging.info("global_rotate_and_slice_sequential: Complete")
 
 
 @torch.no_grad()
@@ -526,3 +671,25 @@ def pca_calc(
     eig_val = X_eig[0][index]
     eigen_vec = X_eig[1][:, index]
     return eig_val, eigen_vec
+
+
+@torch.no_grad()
+def get_covariance(
+    X: list[torch.Tensor], ignore_masks: list[torch.Tensor] | None = None
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Run PCA on a list of batched data. Returns the eigenvalues and eigenvectors.
+    """
+    # Run GC and cleanup GPU memory
+    cleanup_memory()
+
+    H = None
+    for idx, X_batch in enumerate(X):
+        if ignore_masks:
+            X_batch[ignore_masks[idx] == 0] = 0
+
+        X_batch = X_batch.double().to(device=config.device)
+        H_batch = torch.sum(X_batch.mT @ X_batch, dim=0)  # sum over the batch dimension.
+        H = H_batch if H is None else H + H_batch
+
+    return H
