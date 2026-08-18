@@ -9,6 +9,7 @@ import shutil
 
 import torch
 import wandb
+from transformers import AutoTokenizer
 
 from slicegpt import data_utils, gpu_utils, hf_utils, layernorm_fusion, rotate, utils
 from slicegpt.config import config
@@ -237,7 +238,9 @@ def slicing_main(args: argparse.Namespace) -> None:
     scheduler = ConstSlicingScheduler(new_embedding_dimension)
     rotate.rotate_and_slice(model_adapter, train_loader, scheduler, final_orientation=args.final_orientation, slicing_method=args.slicing_method)
 
-    if args.save_dir:
+    if args.save_dir and args.slicing_method == "global":
+        global_save_model(model_adapter, model, args)
+    elif args.save_dir:
         sliced_model_dir = pathlib.Path(args.save_dir)
         sliced_model_dir.mkdir(parents=True, exist_ok=True)
 
@@ -276,6 +279,60 @@ def slicing_main(args: argparse.Namespace) -> None:
     sliced_param_count = sum(int(p.nelement()) for p in model.parameters())
     sliced_fraction = 1.0 - sliced_param_count / original_param_count
     logging.info(f'Sliced model parameters: {sliced_param_count:,d} (sliced fraction {sliced_fraction:.4f})')
+
+
+def global_save_model(model_adapter, model, args):
+    sliced_model_dir = pathlib.Path(args.save_dir)
+    sliced_model_dir.mkdir(parents=True, exist_ok=True)
+    logging.info(f"Exporting Hugging Face compatible model to {args.save_dir}...")
+
+    # Extract and update the model config
+    hf_config = model.config
+    
+    new_hidden_size = list(model_adapter.slicing_conf.embedding_dimensions.values())[0]
+    hf_config.hidden_size = new_hidden_size
+    
+    # Extract the current PyTorch state dict
+    state_dict = model.state_dict()
+    dtype = next(iter(state_dict.values())).dtype
+
+    # Restore parameterless Norms
+    for name, module in model.named_modules():
+        if "norm" in name.lower() or "ln" in name.lower():
+            weight_key = f"{name}.weight"
+            bias_key = f"{name}.bias"
+            
+            # If SliceGPT made the weight parameterless, inject an all-ones tensor
+            if weight_key not in state_dict:
+                state_dict[weight_key] = torch.ones(new_hidden_size, dtype=dtype, device="cpu")
+            
+            # If the original norm required a bias (like in OPT), inject an all-zeros tensor
+            if hasattr(module, "bias") and module.bias is not None and bias_key not in state_dict:
+                state_dict[bias_key] = torch.zeros(new_hidden_size, dtype=dtype, device="cpu")
+
+    # Handle tied word embeddings by deleting the lm head
+    if getattr(hf_config, "tie_word_embeddings", False):
+        lm_head_key = "lm_head.weight"
+        if lm_head_key in state_dict:
+            del state_dict[lm_head_key]
+            logging.info("Tied embeddings detected: Re-tying lm_head to embeddings.")
+
+    # Save using standard .safetensors
+    model.save_pretrained(
+        save_directory=sliced_model_dir,
+        state_dict=state_dict,
+        safe_serialization=True,
+    )
+    
+    # Save the tokenizer and other essential config files
+    source_path = args.model_path if args.model_path else args.model
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(source_path, trust_remote_code=True)
+        tokenizer.save_pretrained(sliced_model_dir)
+    except Exception as e:
+        logging.info(f'Failed to copy tokenizer: {e}')
+
+    logging.info(f"Successfully saved standard Hugging Face model to {args.save_dir}")
 
 
 if __name__ == "__main__":
