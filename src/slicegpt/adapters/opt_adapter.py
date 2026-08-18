@@ -30,6 +30,8 @@ class CompressedOPTDecoderLayer(OPTDecoderLayer):
         past_key_value: tuple[Tensor] | None = None,
         output_attentions: bool | None = False,
         use_cache: bool | None = False,
+        position_ids: torch.LongTensor | None = None,
+        **kwargs,
     ) -> tuple:
         """
         Args:

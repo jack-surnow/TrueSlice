@@ -7,6 +7,7 @@
 #
 # License updated to MIT license since 7e10f3e in https://huggingface.co/microsoft/phi-2/blob/main/LICENSE
 
+from typing import Tuple
 import torch
 from torch import FloatTensor, LongTensor, Tensor, matmul
 from torch.nn import LayerNorm, Linear, Module
@@ -31,6 +32,9 @@ class CompressedPhiDecoderLayer(PhiDecoderLayer):
         output_attentions: bool | None = False,
         use_cache: bool | None = False,
         past_key_value: tuple[Tensor] | None = None,
+        cache_position: torch.LongTensor | None = None,
+        position_embeddings: Tuple[torch.Tensor, torch.Tensor] | None = None,
+        **kwargs,
     ) -> tuple:
         """
         Args:
@@ -55,23 +59,31 @@ class CompressedPhiDecoderLayer(PhiDecoderLayer):
         hidden_states = self.input_layernorm(hidden_states)
 
         # Self Attention
-        attn_outputs, self_attn_weights, present_key_value = self.self_attn(
+        attn_outputs = self.self_attn(
             hidden_states=hidden_states,
             attention_mask=attention_mask,
             position_ids=position_ids,
             past_key_value=past_key_value,
             output_attentions=output_attentions,
             use_cache=use_cache,
+            cache_position=cache_position,
+            position_embeddings=position_embeddings,
+            **kwargs,
         )
-        attn_outputs = self.resid_dropout(attn_outputs)
+        
+        attn_output = attn_outputs[0]
+        self_attn_weights = attn_outputs[1] if len(attn_outputs) > 1 else None
+        present_key_value = attn_outputs[2] if len(attn_outputs) > 2 else None
+
+        attn_output = self.resid_dropout(attn_output)
 
         feed_forward_hidden_states = self.resid_dropout(self.mlp(hidden_states))
 
         if self.attn_shortcut_Q is not None:
             rotated_residual = matmul(residual, self.attn_shortcut_Q)
-            hidden_states = attn_outputs + feed_forward_hidden_states + rotated_residual
+            hidden_states = attn_output + feed_forward_hidden_states + rotated_residual
         else:
-            hidden_states = attn_outputs + feed_forward_hidden_states + residual
+            hidden_states = attn_output + feed_forward_hidden_states + residual
 
         outputs = (hidden_states,)
 

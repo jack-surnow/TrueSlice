@@ -36,12 +36,12 @@ def slicing_arg_parser(interactive: bool = True) -> argparse.Namespace:
         help="Path to load the model to fine-tune (sliced) and tokenizer from",
         default=None,
     )
-    parser.add_argument("--dtype", type=str, help="Data type to use.", choices=["fp32", "fp16"], default="fp16")
+    parser.add_argument("--dtype", type=str, help="Data type to use.", choices=["fp32", "fp16", "bf16"], default="fp16")
     parser.add_argument(
         "--cal-dataset",
         type=str,
         help="Dataset to calibrate and calculate perplexity on.",
-        choices=["wikitext2", "ptb", "c4", "alpaca", "FineWeb-EDU_10B_Packed_2048"],
+        choices=["wikitext2", "ptb", "c4", "alpaca"],
         default="wikitext2",
     )
     parser.add_argument(
@@ -76,7 +76,7 @@ def slicing_arg_parser(interactive: bool = True) -> argparse.Namespace:
         "--slicing-method",
         type=str,
         default="slicegpt",
-        choices=["slicegpt", "global", "chunked"],
+        choices=["slicegpt", "global"],
         help="Method to use for calculating and applying PCA rotations across the residual stream.",
     )
     parser.add_argument(
@@ -125,6 +125,8 @@ def process_slicing_args(args):
         config.dtype = torch.float16
     elif args.dtype == "fp32":
         config.dtype = torch.float32
+    elif args.dtype == "bf16":
+        config.dtype = torch.bfloat16
     else:
         raise argparse.ArgumentTypeError(f"Data type should be one of 'fp16', 'fp32'")
 
@@ -150,6 +152,7 @@ def slicing_main(args: argparse.Namespace) -> None:
             sparsity=args.sparsity,
             round_interval=args.round_interval,
             token=args.hf_token,
+            slicing_method=args.slicing_method,
         )
     else:
         # load one of the pre-trained models
@@ -187,6 +190,8 @@ def slicing_main(args: argparse.Namespace) -> None:
         dataset_ppl = gpu_utils.evaluate_ppl(model, model.config.pad_token_id, test_loader)
         logging.info(f'Loaded model perplexity: {dataset_ppl}')
         wandb.log({"original_ppl": dataset_ppl})
+        sliced_param_count = sum(int(p.nelement()) for p in model.parameters())
+        logging.info(f'Sliced model parameters: {sliced_param_count:,d}')
         return
 
     # original ppl
@@ -224,6 +229,7 @@ def slicing_main(args: argparse.Namespace) -> None:
     new_embedding_dimension = int((1 - args.sparsity) * model_adapter.hidden_size)
     # round (down) to the nearest multiple of round_interval
     new_embedding_dimension -= new_embedding_dimension % args.round_interval
+
     logging.info(
         f"New embedding dimension: {new_embedding_dimension} (sparsity {100*(1 - new_embedding_dimension / model_adapter.hidden_size):.4f} %)"
     )

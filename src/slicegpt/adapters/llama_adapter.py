@@ -50,8 +50,7 @@ class CompressedLlamaDecoderLayer(LlamaDecoderLayer):
 
         hidden_states = self.input_layernorm(hidden_states)
 
-        # Self Attention
-        hidden_states, self_attn_weights, present_key_value = self.self_attn(
+        attn_outputs = self.self_attn(
             hidden_states=hidden_states,
             attention_mask=attention_mask,
             position_ids=position_ids,
@@ -60,6 +59,11 @@ class CompressedLlamaDecoderLayer(LlamaDecoderLayer):
             use_cache=use_cache,
             **kwargs,
         )
+        
+        hidden_states = attn_outputs[0]
+        self_attn_weights = attn_outputs[1] if len(attn_outputs) > 1 else None
+        present_key_value = attn_outputs[2] if len(attn_outputs) > 2 else None
+
         if self.attn_shortcut_Q is not None:
             rotated_residual = matmul(residual, self.attn_shortcut_Q)
             hidden_states = rotated_residual + hidden_states
@@ -224,7 +228,8 @@ class LlamaModelAdapter(ModelAdapter):
         local_files_only: bool = False,
         token: str | bool | None = None,
     ) -> ModelAdapter | None:
-        if not (model_name.startswith("meta-llama/Llama-2") or model_name.startswith("meta-llama/Meta-Llama-3")):
+        if not (model_name.startswith("meta-llama/Llama-2") or model_name.startswith("meta-llama/Meta-Llama-3") or
+                model_name.startswith("meta-llama/Llama-3") or model_name.startswith("TinyLlama/TinyLlama")):
             return None
 
         model = LlamaForCausalLM.from_pretrained(
@@ -244,7 +249,8 @@ class LlamaModelAdapter(ModelAdapter):
         local_files_only: bool = False,
         token: str | bool | None = None,
     ) -> ModelAdapter | None:
-        if not (model_name.startswith("meta-llama/Llama-2") or model_name.startswith("meta-llama/Meta-Llama-3")):
+        if not (model_name.startswith("meta-llama/Llama-2") or model_name.startswith("meta-llama/Meta-Llama-3") or
+                model_name.startswith("meta-llama/Llama-3") or model_name.startswith("TinyLlama/TinyLlama")):
             return None
 
         class UninitializedLlamaForCausalLM(LlamaForCausalLM):

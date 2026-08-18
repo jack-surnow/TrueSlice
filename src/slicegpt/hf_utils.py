@@ -10,7 +10,7 @@ from transformers import AutoTokenizer, PreTrainedTokenizerBase
 
 from .layernorm_fusion import fuse_modules, replace_layers
 from .model_adapter import ModelAdapter, SlicingConfig
-from .rotate import slice_rotated_model
+from .rotate import slice_rotated_model, global_slice_rotated_model
 
 
 def do_not_initialize(func):
@@ -119,6 +119,7 @@ def load_sliced_model(
     lora_config: Any = None,
     sparsity: float | None = None,
     round_interval: int | None = 1,
+    slicing_method: str = 'slicegpt',
 ) -> tuple[ModelAdapter, PreTrainedTokenizerBase]:
     """
     Load the sliced model and the tokenizer from the given path. If lora_config: peft.LoraConfig is supplied
@@ -137,18 +138,19 @@ def load_sliced_model(
         uninitialized=True,
         token=token,
     )
-    replace_layers(model_adapter)
+    replace_layers(model_adapter, slicing_method=slicing_method)
     fuse_modules(model_adapter)
 
     hidden_size = model_adapter.hidden_size
-    for layer_adapter in model_adapter.get_layers():
-        if not model_adapter.parallel_blocks:
-            layer_adapter.layer.mlp_shortcut_Q = torch.nn.Parameter(
+    if slicing_method == 'slicegpt':
+        for layer_adapter in model_adapter.get_layers():
+            if not model_adapter.parallel_blocks:
+                layer_adapter.layer.mlp_shortcut_Q = torch.nn.Parameter(
+                    torch.zeros(hidden_size, hidden_size).to(dtype=torch.float16)
+                )
+            layer_adapter.layer.attn_shortcut_Q = torch.nn.Parameter(
                 torch.zeros(hidden_size, hidden_size).to(dtype=torch.float16)
             )
-        layer_adapter.layer.attn_shortcut_Q = torch.nn.Parameter(
-            torch.zeros(hidden_size, hidden_size).to(dtype=torch.float16)
-        )
 
     config_path = pathlib.Path(sliced_model_path) / my_sliced_model_config
 
@@ -163,7 +165,10 @@ def load_sliced_model(
         config.const_dimension = new_embedding_dimension
         model_adapter.slicing_conf = config
 
-    slice_rotated_model(model_adapter)
+    if slicing_method == 'slicegpt':
+        slice_rotated_model(model_adapter)
+    else:
+        global_slice_rotated_model(model_adapter)
 
     if lora_config:
         from peft import get_peft_model

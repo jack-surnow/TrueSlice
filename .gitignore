@@ -494,3 +494,6 @@ Control.system-ca-bundle
 GitHub.sublime-settings 
 
 commands.txt
+my_experiments.sh
+qwen3_adapter.py
+mobilellm_adapter.py

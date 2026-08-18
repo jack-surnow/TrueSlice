@@ -39,6 +39,8 @@ class CompressedPhi3DecoderLayer(Phi3DecoderLayer):
         past_key_value: Optional[Tuple[torch.Tensor]] = None,
         output_attentions: Optional[bool] = False,
         use_cache: Optional[bool] = False,
+        cache_position: torch.LongTensor | None = None,
+        position_embeddings: Tuple[torch.Tensor, torch.Tensor] | None = None,
         **kwargs,
     ) -> Tuple[Any]:
         if "padding_mask" in kwargs:
@@ -69,20 +71,27 @@ class CompressedPhi3DecoderLayer(Phi3DecoderLayer):
         hidden_states = self.input_layernorm(hidden_states)
 
         # Self Attention
-        attn_outputs, self_attn_weights, present_key_value = self.self_attn(
+        attn_outputs = self.self_attn(
             hidden_states=hidden_states,
             attention_mask=attention_mask,
             position_ids=position_ids,
             past_key_value=past_key_value,
             output_attentions=output_attentions,
             use_cache=use_cache,
+            cache_position=cache_position,
+            position_embeddings=position_embeddings,
+            **kwargs,
         )
+
+        attn_output = attn_outputs[0]
+        self_attn_weights = attn_outputs[1] if len(attn_outputs) > 1 else None
+        present_key_value = attn_outputs[2] if len(attn_outputs) > 2 else None
 
         if self.attn_shortcut_Q is not None:
             rotated_residual = matmul(residual, self.attn_shortcut_Q)
-            hidden_states = rotated_residual + self.resid_attn_dropout(attn_outputs)
+            hidden_states = rotated_residual + self.resid_attn_dropout(attn_output)
         else:
-            hidden_states = residual + self.resid_attn_dropout(attn_outputs)
+            hidden_states = residual + self.resid_attn_dropout(attn_output)
 
         residual = hidden_states
         hidden_states = self.post_attention_layernorm(hidden_states)

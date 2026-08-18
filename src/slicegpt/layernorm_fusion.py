@@ -20,7 +20,7 @@ def replace_layers(model_adapter: ModelAdapter, verbose: bool = True, slicing_me
     if verbose:
         logging.info("Replacing layers")
 
-    if slicing_method == 'slicegpt' or slicing_method == 'chunked':
+    if slicing_method == 'slicegpt':
         replace_modules(
             model_adapter.model,
             model_adapter.original_layer_type,
