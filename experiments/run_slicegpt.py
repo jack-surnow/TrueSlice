@@ -291,6 +291,7 @@ def global_save_model(model_adapter, model, args):
     
     new_hidden_size = list(model_adapter.slicing_conf.embedding_dimensions.values())[0]
     hf_config.hidden_size = new_hidden_size
+    hf_config.tie_word_embeddings = False
     
     # Extract the current PyTorch state dict
     state_dict = model.state_dict()
@@ -310,12 +311,14 @@ def global_save_model(model_adapter, model, args):
             if hasattr(module, "bias") and module.bias is not None and bias_key not in state_dict:
                 state_dict[bias_key] = torch.zeros(new_hidden_size, dtype=dtype, device="cpu")
 
+    # Cannot be done using this rotation method as the final norm is fused into the lm_head
+    
     # Handle tied word embeddings by deleting the lm head
-    if getattr(hf_config, "tie_word_embeddings", False):
-        lm_head_key = "lm_head.weight"
-        if lm_head_key in state_dict:
-            del state_dict[lm_head_key]
-            logging.info("Tied embeddings detected: Re-tying lm_head to embeddings.")
+    # if getattr(hf_config, "tie_word_embeddings", False):
+    #     lm_head_key = "lm_head.weight"
+    #     if lm_head_key in state_dict:
+    #         del state_dict[lm_head_key]
+    #         logging.info("Tied embeddings detected: Re-tying lm_head to embeddings.")
 
     # Save using standard .safetensors
     model.save_pretrained(
