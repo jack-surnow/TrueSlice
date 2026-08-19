@@ -23,16 +23,16 @@ def get_dataset(name: str) -> datasets.DatasetDict:
     logging.info(f"Loading dataset: {name}")
 
     ds_properties = {
-        # "wikitext2": {"path": "wikitext", "config_name": "wikitext-2-raw-v1"},
         "wikitext2": {"path": "Salesforce/wikitext", "config_name": "wikitext-2-raw-v1"},
         "ptb": {"path": "ptb_text_only", "config_name": "penn_treebank"},
         "c4": {
             "path": "allenai/c4",
-            "config_name": "allenai--c4",
+            "config_name": "en",
             "data_files": {
                 "train": "en/c4-train.00000-of-01024.json.gz",
                 "validation": "en/c4-validation.00000-of-00008.json.gz",
             },
+            "verification_mode": "no_checks",
             "cols_to_remove": ['url', 'timestamp'],
         },
         "alpaca": {"path": "tatsu-lab/alpaca", "cols_to_remove": ['input', 'output', 'instruction']},
@@ -43,7 +43,7 @@ def get_dataset(name: str) -> datasets.DatasetDict:
 
     properties = ds_properties[name]
     ds = datasets.load_dataset(
-        properties["path"], name=properties.get("config_name"), data_files=properties.get("data_files")
+        properties["path"], name=properties.get("config_name"), data_files=properties.get("data_files"), verification_mode=properties.get("verification_mode")
     )
 
     if "cols_to_remove" in properties:
@@ -90,7 +90,8 @@ def prepare_test_dataloader(
         def __init__(self, ds, tokenizer, seqlen=2048):
             """Tokenize the entire dataset and reshape it into sequences of length seqlen."""
 
-            tokenized_ds = tokenizer("\n\n".join(ds['text']), return_tensors='pt')
+            text_column = 'text' if 'text' in ds.column_names else 'sentence'
+            tokenized_ds = tokenizer("\n\n".join(ds[text_column]), return_tensors='pt')
             nsamples = tokenized_ds.input_ids.numel() // seqlen
 
             input_ids = tokenized_ds.input_ids[0, : nsamples * seqlen]
