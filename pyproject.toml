@@ -6,16 +6,11 @@ requires = ["setuptools>=42.0.0", "setuptools-scm"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "transformercompression"
+name = "trueslice"
 version = "0.0.1"
-description= "Implementation of methods for compressing transformers"
+description= "My custom implementation of SliceGPT for structural pruning"
 authors = [
-    {name = "James Hensman"},
-    {name = "Max Croci"},
-    {name = "Saleh Ashkboos"},
-    {name = "Marcelo Gennari do Nascimento"},
-    {name = "Dmitry Kats"},
-    {name = "Pashmina Cameron"}
+    {name = "Jack Surnow"}
 ]
 readme = "README.md"
 requires-python = ">=3.10"
@@ -48,7 +43,7 @@ finetune = [
     "peft==0.6.2",
 ]
 
-all = ["transformercompression[dev,experiment,finetune]"]
+all = ["trueslice[dev,experiment,finetune]"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

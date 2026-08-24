@@ -12,7 +12,7 @@ import torch.nn as nn
 from tqdm import tqdm
 import wandb
 
-from slicegpt import data_utils, gpu_utils, hf_utils, layernorm_fusion, rotate, utils
+from slicegpt import data_utils, gpu_utils, hf_utils, layernorm_fusion, global_rotate, utils
 from slicegpt.config import config
 from slicegpt.slicing_scheduler import ConstSlicingScheduler
 
@@ -149,13 +149,6 @@ def slicing_main(args: argparse.Namespace) -> None:
     dataset = data_utils.get_dataset(args.cal_dataset)
     train_dataset = dataset["train"]
     test_dataset = dataset["test"] if "test" in dataset else dataset["validation"]
-    if len(train_dataset) > 5000:
-        logging.info(f"truncating training set of len: {len(train_dataset)}")
-        train_dataset = train_dataset.select(range(5000))
-    if len(test_dataset) > 1000:
-        logging.info(f"truncating testing set of len: {len(test_dataset)}")
-        test_dataset = test_dataset.select(range(1000))
-
     train_loader = data_utils.prepare_dataloader(
         dataset=train_dataset,
         tokenizer=tokenizer,
@@ -220,7 +213,7 @@ def slicing_main(args: argparse.Namespace) -> None:
     )
 
     scheduler = ConstSlicingScheduler(new_embedding_dimension)
-    rotate.global_rotate_and_slice(model_adapter, train_loader, scheduler, final_orientation=args.final_orientation)
+    global_rotate.global_rotate_and_slice(model_adapter, train_loader, scheduler, final_orientation=args.final_orientation)
 
 
     # logging.info("Loading fresh dense model for Final Norm Calibration...")
@@ -230,7 +223,7 @@ def slicing_main(args: argparse.Namespace) -> None:
     # )
 
     # Not yet functional
-    # rotate.global_calibrate_norms_ols(
+    # global_rotate.global_calibrate_norms_ols(
     #     dense_adapter=dense_adapter,
     #     sliced_adapter=model_adapter,
     #     dataloader=train_loader,

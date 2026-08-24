@@ -123,7 +123,7 @@ def global_rotate_and_slice_sequential(
         layer = layer_adapter.layer
 
         rotate.rotate_attention_inputs(layer_adapter, Q_global)
-        rotate.global_slice_attention_inputs(layer_adapter, global_dim)
+        global_slice_attention_inputs(layer_adapter, global_dim)
 
         rotate.rotate_attention_output(layer_adapter, Q_global)
         rotate.slice_attention_output(layer_adapter, global_dim)
@@ -242,7 +242,7 @@ def global_rotate_and_slice_parallel(
         layer = layer_adapter.layer
 
         rotate.rotate_attention_inputs(layer_adapter, Q_global)
-        rotate.global_slice_attention_inputs(layer_adapter, global_dim)
+        global_slice_attention_inputs(layer_adapter, global_dim)
 
         rotate.rotate_attention_output(layer_adapter, Q_global)
         rotate.slice_attention_output(layer_adapter, global_dim)
