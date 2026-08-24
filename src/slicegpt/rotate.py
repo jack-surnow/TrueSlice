@@ -32,7 +32,7 @@ def slice_attention_inputs(layer_adapter: LayerAdapter, new_embedding_dimension:
     layer_adapter.layer.attn_shortcut_Q = nn.Parameter(layer_adapter.layer.attn_shortcut_Q[:new_embedding_dimension, :])
 
 
-def slice_attention_inputs_no_shortcut(layer_adapter: LayerAdapter, new_embedding_dimension: int) -> None:
+def global_slice_attention_inputs(layer_adapter: LayerAdapter, new_embedding_dimension: int) -> None:
     # Slice the WQ, WK and WV matrices of the self-attention layer.
     for W in layer_adapter.get_attention_inputs():
         W.weight.data = W.weight.data[:, :new_embedding_dimension]
@@ -134,23 +134,30 @@ def rotate_and_slice(
     slicing_scheduler: SlicingScheduler,
     apply_mask: bool = True,
     final_orientation: str = 'pca',
-    slicing_method: str = 'slicegpt'
 ) -> None:
     """
     Rotate and slice a model, with interleaved slicing and PCA calculations
     """
-    if slicing_method == 'slicegpt':
-        if model_adapter.parallel_blocks:
-            rotate_and_slice_parallel(model_adapter, dataloader, slicing_scheduler, apply_mask, final_orientation)
-        else:
-            rotate_and_slice_sequential(model_adapter, dataloader, slicing_scheduler, apply_mask, final_orientation)
-    elif slicing_method == 'global':
-        if model_adapter.parallel_blocks:
-            global_rotate_and_slice_parallel(model_adapter, dataloader, slicing_scheduler, apply_mask, final_orientation)
-        else:
-            global_rotate_and_slice_sequential(model_adapter, dataloader, slicing_scheduler, apply_mask, final_orientation)
+    if model_adapter.parallel_blocks:
+        rotate_and_slice_parallel(model_adapter, dataloader, slicing_scheduler, apply_mask, final_orientation)
     else:
-        raise ValueError(f"Unknown slicing method: {slicing_method}")
+        rotate_and_slice_sequential(model_adapter, dataloader, slicing_scheduler, apply_mask, final_orientation)
+
+
+def global_rotate_and_slice(
+    model_adapter: ModelAdapter,
+    dataloader: torch.utils.data.DataLoader[torch.Tensor],
+    slicing_scheduler: SlicingScheduler,
+    apply_mask: bool = True,
+    final_orientation: str = 'pca',
+) -> None:
+    """
+    Rotate and slice a model, with interleaved slicing and PCA calculations
+    """
+    if model_adapter.parallel_blocks:
+        global_rotate_and_slice_parallel(model_adapter, dataloader, slicing_scheduler, apply_mask, final_orientation)
+    else:
+        global_rotate_and_slice_sequential(model_adapter, dataloader, slicing_scheduler, apply_mask, final_orientation)
 
 
 @torch.no_grad()
@@ -336,20 +343,10 @@ def global_rotate_and_slice_sequential(
     for layer_adapter in tqdm(layers, unit="layer", desc="Accumulating Covariance"):
         mlp_ln_inputs, layer_outputs = get_signals(layer_adapter, args, kwargs)
 
-        # Override with final layer
-        # C_global = get_covariance(mlp_ln_inputs, ignore_masks)
-        # C_global += get_covariance(layer_outputs, ignore_masks)
-
         # Acculumate without normalization
         C_global += get_covariance(mlp_ln_inputs, ignore_masks)
         C_global += get_covariance(layer_outputs, ignore_masks)
-
-        # # Accumulate with normalization
-        # C_mlp = get_covariance(mlp_ln_inputs, ignore_masks)
-        # C_global += C_mlp / torch.trace(C_mlp)
-        # C_out = get_covariance(layer_outputs, ignore_masks)
-        # C_global += C_out / torch.trace(C_out)
-
+        
         del mlp_ln_inputs
         
         for i, out in enumerate(layer_outputs):
@@ -393,7 +390,7 @@ def global_rotate_and_slice_sequential(
         layer = layer_adapter.layer
 
         rotate_attention_inputs(layer_adapter, Q_global)
-        slice_attention_inputs_no_shortcut(layer_adapter, global_dim)
+        global_slice_attention_inputs(layer_adapter, global_dim)
 
         rotate_attention_output(layer_adapter, Q_global)
         slice_attention_output(layer_adapter, global_dim)
@@ -410,6 +407,7 @@ def global_rotate_and_slice_sequential(
     rotate_head(model_adapter, Q_global)
     slice_head(model_adapter, global_dim)
 
+    model_adapter.Q_global = Q_global.detach().clone()
     model_adapter.slicing_conf = slicing_scheduler.slicing_conf.clone()
 
     logging.info("global_rotate_and_slice_sequential: Complete")
@@ -578,15 +576,8 @@ def global_rotate_and_slice_parallel(
             out = out.cpu()
             outputs.append(out)
 
-        # Override with final layer
-        # C_global = get_covariance(outputs, ignore_masks)
-
         # Accumulate without normalization
         C_global += get_covariance(outputs, ignore_masks)
-
-        # Acculumate with normalization
-        # C_out = get_covariance(outputs, ignore_masks)
-        # C_global += C_out / torch.trace(C_out)
 
         for i, out in enumerate(outputs):
             clean_out = out.detach().cpu().clone()
@@ -629,7 +620,7 @@ def global_rotate_and_slice_parallel(
         layer = layer_adapter.layer
 
         rotate_attention_inputs(layer_adapter, Q_global)
-        slice_attention_inputs_no_shortcut(layer_adapter, global_dim)
+        global_slice_attention_inputs(layer_adapter, global_dim)
 
         rotate_attention_output(layer_adapter, Q_global)
         slice_attention_output(layer_adapter, global_dim)
@@ -807,7 +798,7 @@ def global_slice_rotated_model(model_adapter: ModelAdapter, slicing_scheduler: S
     for i, layer_adapter in enumerate(layers):
         layer = layer_adapter.layer
 
-        slice_attention_inputs_no_shortcut(layer_adapter, global_dim)
+        global_slice_attention_inputs(layer_adapter, global_dim)
         slice_mlp_input(layer_adapter, global_dim)
         slice_mlp_output(layer_adapter, global_dim)
         slice_attention_output(layer_adapter, global_dim)
@@ -879,3 +870,126 @@ def get_covariance(
         H = H_batch if H is None else H + H_batch
 
     return H
+
+
+
+@torch.no_grad()
+def global_calibrate_norms_ols(
+    dense_adapter: ModelAdapter,
+    sliced_adapter: ModelAdapter,
+    dataloader: torch.utils.data.DataLoader, 
+    d_new: int, 
+    device: torch.device,
+    apply_mask: bool = True,
+    eps: float = 1e-8
+) -> None:
+
+    dense_adapter.model.eval()
+    sliced_adapter.model.eval()
+
+    Q_global = sliced_adapter.Q_global
+
+    inps_dense, args_dense, kwargs_dense, ignore_masks_dense = [], [], [], []
+    for batch in dataloader:
+        inp_batch_dense, args_batch_dense, kwargs_batch_dense = get_layer0_inputs(dense_adapter, batch)
+        inps_dense.append(inp_batch_dense)
+        args_dense.append(args_batch_dense)
+        kwargs_dense.append(kwargs_batch_dense)
+        if apply_mask:
+            ignore_masks_dense.append(batch["attention_mask"])
+
+    inps_sliced, args_sliced, kwargs_sliced, ignore_masks_sliced = [], [], [], []
+    for batch in dataloader:
+        inp_batch_sliced, args_batch_sliced, kwargs_batch_sliced = get_layer0_inputs(sliced_adapter, batch)
+        inps_sliced.append(inp_batch_sliced)
+        args_sliced.append(args_batch_sliced)
+        kwargs_sliced.append(kwargs_batch_sliced)
+        if apply_mask:
+            ignore_masks_sliced.append(batch["attention_mask"])
+
+    optimal_norm_params = {}
+
+    layers = zip(dense_adapter.get_layers(), sliced_adapter.get_layers())
+    for idx, (dense_layer, sliced_layer) in enumerate(tqdm(layers, unit="layer", desc="Performing Chanel-wise OLS")):
+
+        dense_layer = dense_layer.to(config.device)
+        sliced_layer = sliced_layer.to(config.device)
+
+        acts = {}
+        def get_hook(name):
+            return lambda m, i, o: acts.update({name: o.detach().to(torch.float32)})
+
+        # Pass 1
+        h_d1 = dense_layer.get_first_layernorm().register_forward_hook(get_hook("d1"))
+        h_s1 = sliced_layer.get_first_layernorm().register_forward_hook(get_hook("s1"))
+
+        sum_uu1 = torch.zeros(d_new, dtype=torch.float64, device=device)
+        sum_uy1 = torch.zeros(d_new, dtype=torch.float64, device=device)
+
+        for i in range(len(inps_dense)):
+            _ = dense_layer.layer(*args_dense[i], **kwargs_dense[i])
+            _ = sliced_layer.layer(*args_sliced[i], **kwargs_sliced[i])
+            
+            Y1 = torch.matmul(acts["d1"], Q_global).reshape(-1, d_new).to(torch.float64)
+            U1 = acts["s1"].reshape(-1, d_new).to(torch.float64)
+            sum_uu1 += (U1 * U1).sum(dim=0)
+            sum_uy1 += (U1 * Y1).sum(dim=0)
+
+        gamma1 = sum_uy1 / (sum_uu1 + eps)
+        optimal_norm_params[f"layer_{idx}_norm1_gamma"] = gamma1.clone()
+        
+        h_d1.remove()
+        h_s1.remove()
+
+        # Pass 2
+        def modifier_hook1(m, i, o):
+            return o * gamma1.to(torch.float32)
+        
+        h_mod1 = sliced_layer.get_first_layernorm().register_forward_hook(modifier_hook1)
+
+        h_d2 = dense_layer.get_second_layernorm().register_forward_hook(get_hook("d2"))
+        h_s2 = sliced_layer.get_second_layernorm().register_forward_hook(get_hook("s2"))
+
+        sum_uu2 = torch.zeros(d_new, dtype=torch.float64, device=device)
+        sum_uy2 = torch.zeros(d_new, dtype=torch.float64, device=device)
+
+        for i in range(len(inps_dense)):
+            _ = dense_layer.layer(*args_dense[i], **kwargs_dense[i])
+            _ = sliced_layer.layer(*args_sliced[i], **kwargs_sliced[i])
+            
+            Y2 = torch.matmul(acts["d2"], Q_global).reshape(-1, d_new).to(torch.float64)
+            U2 = acts["s2"].reshape(-1, d_new).to(torch.float64)
+            sum_uu2 += (U2 * U2).sum(dim=0)
+            sum_uy2 += (U2 * Y2).sum(dim=0)
+
+        gamma2 = sum_uy2 / (sum_uu2 + eps)
+        optimal_norm_params[f"layer_{idx}_norm2_gamma"] = gamma2.clone()
+        
+        h_d2.remove()
+        h_s2.remove()
+
+        # Pass 3
+        def modifier_hook2(m, i, o):
+            return o * gamma2.to(torch.float32)
+            
+        h_mod2 = sliced_layer.get_second_layernorm().register_forward_hook(modifier_hook2)
+
+        for i in range(len(inps_dense)):
+            out_d = dense_layer.layer(*args_dense[i], **kwargs_dense[i])
+            out_s = sliced_layer.layer(*args_sliced[i], **kwargs_sliced[i])
+
+            if isinstance(out_d, tuple):
+                args_dense[i] = dense_layer.get_updated_args(out_d[0].detach(), args_dense[i])
+                args_sliced[i] = sliced_layer.get_updated_args(out_s[0].detach(), args_sliced[i])
+            else:
+                args_dense[i] = dense_layer.get_updated_args(out_d.detach(), args_dense[i])
+                args_sliced[i] = sliced_layer.get_updated_args(out_s.detach(), args_sliced[i])
+
+        h_mod1.remove()
+        h_mod2.remove()
+
+        dense_layer.layer.to("cpu")
+        sliced_layer.layer.to("cpu")
+        torch.cuda.empty_cache()
+
+    sliced_adapter.optimal_norm_params = optimal_norm_params

@@ -11,7 +11,7 @@ from .model_adapter import ModelAdapter
 from .modules import RMSN
 
 
-def replace_layers(model_adapter: ModelAdapter, verbose: bool = True, slicing_method: str = 'slicegpt') -> None:
+def replace_layers(model_adapter: ModelAdapter, verbose: bool = True) -> None:
     """Replace layers with compressed versions.
 
     This adds a 'shortcut operation' to each block.
@@ -20,22 +20,32 @@ def replace_layers(model_adapter: ModelAdapter, verbose: bool = True, slicing_me
     if verbose:
         logging.info("Replacing layers")
 
-    if slicing_method == 'slicegpt':
-        replace_modules(
-            model_adapter.model,
-            model_adapter.original_layer_type,
-            model_adapter.convert_layer_to_compressed_and_register_buffers,
-            replace_layers=True,
-        )
-    elif slicing_method == 'global':
-        replace_modules(
-            model_adapter.model,
-            model_adapter.original_layer_type,
-            model_adapter.convert_layer_to_compressed_and_register_buffers_no_shortcut,
-            replace_layers=True,
-        )
-    else:
-        raise ValueError(f"Unknown slicing method: {slicing_method}")
+    replace_modules(
+        model_adapter.model,
+        model_adapter.original_layer_type,
+        model_adapter.convert_layer_to_compressed_and_register_buffers,
+        replace_layers=True,
+    )
+
+    if verbose:
+        logging.info("Replacing layers done")
+
+
+def global_replace_layers(model_adapter: ModelAdapter, verbose: bool = True) -> None:
+    """Replace layers with compressed versions.
+
+    This adds a 'shortcut operation' to each block.
+    This function should be called before fusing the modules!
+    """
+    if verbose:
+        logging.info("Replacing layers")
+
+    replace_modules(
+        model_adapter.model,
+        model_adapter.original_layer_type,
+        model_adapter.global_convert_layer_to_compressed_and_register_buffers,
+        replace_layers=True,
+    )
 
     if verbose:
         logging.info("Replacing layers done")

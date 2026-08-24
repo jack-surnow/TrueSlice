@@ -298,7 +298,7 @@ class ModelAdapter(ABC):
         return compressed_layer
 
     @final
-    def convert_layer_to_compressed_and_register_buffers_no_shortcut(self, layer: Module, layer_idx: int | None) -> Module:
+    def global_convert_layer_to_compressed_and_register_buffers(self, layer: Module, layer_idx: int | None) -> Module:
         """
         Replace the given layer with a compressed version of the layer. Also register the shortcut_Q matrices
         to be used in Compressed transformer layer's forward() method to be updated during slicing.

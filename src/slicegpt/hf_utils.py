@@ -10,7 +10,7 @@ from transformers import AutoTokenizer, PreTrainedTokenizerBase
 
 from .layernorm_fusion import fuse_modules, replace_layers
 from .model_adapter import ModelAdapter, SlicingConfig
-from .rotate import slice_rotated_model, global_slice_rotated_model
+from .rotate import slice_rotated_model
 
 
 def do_not_initialize(func):
@@ -119,7 +119,6 @@ def load_sliced_model(
     lora_config: Any = None,
     sparsity: float | None = None,
     round_interval: int | None = 1,
-    slicing_method: str = 'slicegpt',
 ) -> tuple[ModelAdapter, PreTrainedTokenizerBase]:
     """
     Load the sliced model and the tokenizer from the given path. If lora_config: peft.LoraConfig is supplied
@@ -138,19 +137,18 @@ def load_sliced_model(
         uninitialized=True,
         token=token,
     )
-    replace_layers(model_adapter, slicing_method=slicing_method)
+    replace_layers(model_adapter)
     fuse_modules(model_adapter)
 
     hidden_size = model_adapter.hidden_size
-    if slicing_method == 'slicegpt':
-        for layer_adapter in model_adapter.get_layers():
-            if not model_adapter.parallel_blocks:
-                layer_adapter.layer.mlp_shortcut_Q = torch.nn.Parameter(
-                    torch.zeros(hidden_size, hidden_size).to(dtype=torch.float16)
-                )
-            layer_adapter.layer.attn_shortcut_Q = torch.nn.Parameter(
+    for layer_adapter in model_adapter.get_layers():
+        if not model_adapter.parallel_blocks:
+            layer_adapter.layer.mlp_shortcut_Q = torch.nn.Parameter(
                 torch.zeros(hidden_size, hidden_size).to(dtype=torch.float16)
             )
+        layer_adapter.layer.attn_shortcut_Q = torch.nn.Parameter(
+            torch.zeros(hidden_size, hidden_size).to(dtype=torch.float16)
+        )
 
     config_path = pathlib.Path(sliced_model_path) / my_sliced_model_config
 
@@ -165,10 +163,7 @@ def load_sliced_model(
         config.const_dimension = new_embedding_dimension
         model_adapter.slicing_conf = config
 
-    if slicing_method == 'slicegpt':
-        slice_rotated_model(model_adapter)
-    else:
-        global_slice_rotated_model(model_adapter)
+    slice_rotated_model(model_adapter)
 
     if lora_config:
         from peft import get_peft_model
@@ -182,3 +177,60 @@ def load_sliced_model(
     model_adapter.model.eval()
 
     return model_adapter, tokenizer
+
+
+def global_save_model(model_adapter, model, args):
+    sliced_model_dir = pathlib.Path(args.save_dir)
+    sliced_model_dir.mkdir(parents=True, exist_ok=True)
+    logging.info(f"Exporting Hugging Face compatible model to {args.save_dir}...")
+
+    # Extract and update the model config
+    hf_config = model.config
+    
+    new_hidden_size = list(model_adapter.slicing_conf.embedding_dimensions.values())[0]
+    hf_config.hidden_size = new_hidden_size
+    hf_config.tie_word_embeddings = False
+    
+    # Extract the current PyTorch state dict
+    state_dict = model.state_dict()
+    dtype = next(iter(state_dict.values())).dtype
+
+    # Restore parameterless Norms
+    for name, module in model.named_modules():
+        if "norm" in name.lower() or "ln" in name.lower():
+            weight_key = f"{name}.weight"
+            bias_key = f"{name}.bias"
+            
+            # If SliceGPT made the weight parameterless, inject an all-ones tensor
+            if weight_key not in state_dict:
+                state_dict[weight_key] = torch.ones(new_hidden_size, dtype=dtype, device="cpu")
+            
+            # If the original norm required a bias (like in OPT), inject an all-zeros tensor
+            if hasattr(module, "bias") and module.bias is not None and bias_key not in state_dict:
+                state_dict[bias_key] = torch.zeros(new_hidden_size, dtype=dtype, device="cpu")
+
+    # Cannot be done using this rotation method as the final norm is fused into the lm_head
+    
+    # Handle tied word embeddings by deleting the lm head
+    # if getattr(hf_config, "tie_word_embeddings", False):
+    #     lm_head_key = "lm_head.weight"
+    #     if lm_head_key in state_dict:
+    #         del state_dict[lm_head_key]
+    #         logging.info("Tied embeddings detected: Re-tying lm_head to embeddings.")
+
+    # Save using standard .safetensors
+    model.save_pretrained(
+        save_directory=sliced_model_dir,
+        state_dict=state_dict,
+        safe_serialization=True,
+    )
+    
+    # Save the tokenizer and other essential config files
+    source_path = args.model_path if args.model_path else args.model
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(source_path, trust_remote_code=True)
+        tokenizer.save_pretrained(sliced_model_dir)
+    except Exception as e:
+        logging.info(f'Failed to copy tokenizer: {e}')
+
+    logging.info(f"Successfully saved standard Hugging Face model to {args.save_dir}")

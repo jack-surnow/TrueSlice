@@ -8,8 +8,9 @@ import pathlib
 import shutil
 
 import torch
+import torch.nn as nn
+from tqdm import tqdm
 import wandb
-from transformers import AutoTokenizer
 
 from slicegpt import data_utils, gpu_utils, hf_utils, layernorm_fusion, rotate, utils
 from slicegpt.config import config
@@ -72,13 +73,6 @@ def slicing_arg_parser(interactive: bool = True) -> argparse.Namespace:
         default="random",
         choices=["random", "pca"],
         help="Final orientation of the sliced weights.",
-    )
-    parser.add_argument(
-        "--slicing-method",
-        type=str,
-        default="slicegpt",
-        choices=["slicegpt", "global"],
-        help="Method to use for calculating and applying PCA rotations across the residual stream.",
     )
     parser.add_argument(
         "--ppl-eval-seqlen", type=int, default=2048, help="Sequence length for evaluating the perplexity."
@@ -153,7 +147,6 @@ def slicing_main(args: argparse.Namespace) -> None:
             sparsity=args.sparsity,
             round_interval=args.round_interval,
             token=args.hf_token,
-            slicing_method=args.slicing_method,
         )
     else:
         # load one of the pre-trained models
@@ -213,7 +206,7 @@ def slicing_main(args: argparse.Namespace) -> None:
         utils.cleanup_memory()
 
     # replace modules with compressible equivalents
-    layernorm_fusion.replace_layers(model_adapter, slicing_method=args.slicing_method)
+    layernorm_fusion.replace_layers(model_adapter)
 
     # fuse layernorms and add rotations to skip connections
     layernorm_fusion.fuse_modules(model_adapter)
@@ -244,11 +237,9 @@ def slicing_main(args: argparse.Namespace) -> None:
     )
 
     scheduler = ConstSlicingScheduler(new_embedding_dimension)
-    rotate.rotate_and_slice(model_adapter, train_loader, scheduler, final_orientation=args.final_orientation, slicing_method=args.slicing_method)
+    rotate.rotate_and_slice(model_adapter, train_loader, scheduler, final_orientation=args.final_orientation)
 
-    if args.save_dir and args.slicing_method == "global":
-        global_save_model(model_adapter, model, args)
-    elif args.save_dir:
+    if args.save_dir:
         sliced_model_dir = pathlib.Path(args.save_dir)
         sliced_model_dir.mkdir(parents=True, exist_ok=True)
 
@@ -289,61 +280,100 @@ def slicing_main(args: argparse.Namespace) -> None:
     logging.info(f'Sliced model parameters: {sliced_param_count:,d} (sliced fraction {sliced_fraction:.4f})')
 
 
-def global_save_model(model_adapter, model, args):
-    sliced_model_dir = pathlib.Path(args.save_dir)
-    sliced_model_dir.mkdir(parents=True, exist_ok=True)
-    logging.info(f"Exporting Hugging Face compatible model to {args.save_dir}...")
+@torch.no_grad()
+def calibrate_final_norm_ols(
+    dense_model: nn.Module, 
+    sliced_model: nn.Module, 
+    dataloader: torch.utils.data.DataLoader, 
+    Q_global: torch.Tensor, 
+    d_new: int, 
+    device: torch.device, 
+    eps: float = 1e-8
+) -> None:
+    """
+    Calibrates the final norm of the sliced model using Channel-Wise OLS.
+    """
+    dense_model.eval()
+    sliced_model.eval()
+    Q_s = Q_global[:, :d_new].to(device=device, dtype=torch.float32)
 
-    # Extract and update the model config
-    hf_config = model.config
-    
-    new_hidden_size = list(model_adapter.slicing_conf.embedding_dimensions.values())[0]
-    hf_config.hidden_size = new_hidden_size
-    hf_config.tie_word_embeddings = False
-    
-    # Extract the current PyTorch state dict
-    state_dict = model.state_dict()
-    dtype = next(iter(state_dict.values())).dtype
+    def get_final_norm(m):
+        if hasattr(m, "model") and hasattr(m.model, "norm"): return m.model.norm
+        if hasattr(m, "transformer") and hasattr(m.transformer, "ln_f"): return m.transformer.ln_f
+        if hasattr(m, "norm"): return m.norm
+        raise ValueError("Final norm not found.")
 
-    # Restore parameterless Norms
-    for name, module in model.named_modules():
-        if "norm" in name.lower() or "ln" in name.lower():
-            weight_key = f"{name}.weight"
-            bias_key = f"{name}.bias"
-            
-            # If SliceGPT made the weight parameterless, inject an all-ones tensor
-            if weight_key not in state_dict:
-                state_dict[weight_key] = torch.ones(new_hidden_size, dtype=dtype, device="cpu")
-            
-            # If the original norm required a bias (like in OPT), inject an all-zeros tensor
-            if hasattr(module, "bias") and module.bias is not None and bias_key not in state_dict:
-                state_dict[bias_key] = torch.zeros(new_hidden_size, dtype=dtype, device="cpu")
+    dense_norm = get_final_norm(dense_model)
+    sliced_norm = get_final_norm(sliced_model)
+    has_bias = sliced_norm.bias is not None
 
-    # Cannot be done using this rotation method as the final norm is fused into the lm_head
-    
-    # Handle tied word embeddings by deleting the lm head
-    # if getattr(hf_config, "tie_word_embeddings", False):
-    #     lm_head_key = "lm_head.weight"
-    #     if lm_head_key in state_dict:
-    #         del state_dict[lm_head_key]
-    #         logging.info("Tied embeddings detected: Re-tying lm_head to embeddings.")
+    # Tensors to accumulate sufficient statistics per channel (using float64)
+    sum_uu = torch.zeros(d_new, dtype=torch.float64, device=device)
+    sum_uy = torch.zeros(d_new, dtype=torch.float64, device=device)
+    if has_bias:
+        sum_u = torch.zeros(d_new, dtype=torch.float64, device=device)
+        sum_y = torch.zeros(d_new, dtype=torch.float64, device=device)
 
-    # Save using standard .safetensors
-    model.save_pretrained(
-        save_directory=sliced_model_dir,
-        state_dict=state_dict,
-        safe_serialization=True,
-    )
-    
-    # Save the tokenizer and other essential config files
-    source_path = args.model_path if args.model_path else args.model
-    try:
-        tokenizer = AutoTokenizer.from_pretrained(source_path, trust_remote_code=True)
-        tokenizer.save_pretrained(sliced_model_dir)
-    except Exception as e:
-        logging.info(f'Failed to copy tokenizer: {e}')
+    total_tokens = 0
+    activations = {}
 
-    logging.info(f"Successfully saved standard Hugging Face model to {args.save_dir}")
+    # Register hooks: Dense target gets output, Sliced gets input
+    t_handle = dense_norm.register_forward_hook(lambda m, i, o: activations.update({"dense_out": o.detach()}))
+    s_handle = sliced_norm.register_forward_hook(lambda m, i, o: activations.update({"sliced_in": i[0].detach()}))
+
+    logging.info("Accumulating statistics for Channel-Wise OLS Calibration...")
+    for batch in tqdm(dataloader, desc="OLS Calibration"):
+        input_ids = batch["input_ids"].to(device) if isinstance(batch, dict) else batch[0].to(device)
+        
+        _ = dense_model(input_ids)
+        _ = sliced_model(input_ids)
+
+        # Target: Fully scaled output projected to global basis
+        Y_dense = activations["dense_out"].to(torch.float32)
+        Y_target = torch.matmul(Y_dense, Q_s)
+        Y_flat = Y_target.reshape(-1, d_new).to(torch.float64)
+        
+        # Source: Parameter-free normalized input
+        X_sliced_in = activations["sliced_in"].to(torch.float32)
+        if has_bias:
+            mean = X_sliced_in.mean(-1, keepdim=True)
+            var = (X_sliced_in - mean).pow(2).mean(-1, keepdim=True)
+            U_pruned = (X_sliced_in - mean) * torch.rsqrt(var + getattr(sliced_norm, "eps", 1e-5))
+        else:
+            var = X_sliced_in.pow(2).mean(-1, keepdim=True)
+            U_pruned = X_sliced_in * torch.rsqrt(var + getattr(sliced_norm, "variance_epsilon", 1e-6))
+        
+        U_flat = U_pruned.reshape(-1, d_new).to(torch.float64)
+        
+        # Accumulate statistics
+        sum_uu += (U_flat * U_flat).sum(dim=0)
+        sum_uy += (U_flat * Y_flat).sum(dim=0)
+        if has_bias:
+            sum_u += U_flat.sum(dim=0)
+            sum_y += Y_flat.sum(dim=0)
+        
+        total_tokens += U_flat.shape[0]
+
+    t_handle.remove()
+    s_handle.remove()
+
+    # Calculate optimal parameters and inject them back into the model
+    if has_bias:
+        mean_u = sum_u / total_tokens
+        mean_y = sum_y / total_tokens
+        cov_uy = (sum_uy / total_tokens) - (mean_u * mean_y)
+        var_u = (sum_uu / total_tokens) - (mean_u ** 2)
+        
+        gamma = cov_uy / (var_u + eps)
+        beta = mean_y - (gamma * mean_u)
+        
+        sliced_norm.weight.data.copy_(gamma.to(sliced_norm.weight.dtype))
+        sliced_norm.bias.data.copy_(beta.to(sliced_norm.bias.dtype))
+        logging.info("Applied Channel-Wise OLS (gamma and beta).")
+    else:
+        gamma = sum_uy / (sum_uu + eps)
+        sliced_norm.weight.data.copy_(gamma.to(sliced_norm.weight.dtype))
+        logging.info("Applied Channel-Wise OLS (gamma only).")
 
 
 if __name__ == "__main__":
