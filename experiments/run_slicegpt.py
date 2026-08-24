@@ -8,8 +8,6 @@ import pathlib
 import shutil
 
 import torch
-import torch.nn as nn
-from tqdm import tqdm
 import wandb
 
 from slicegpt import data_utils, gpu_utils, hf_utils, layernorm_fusion, rotate, utils
@@ -231,7 +229,6 @@ def slicing_main(args: argparse.Namespace) -> None:
     new_embedding_dimension = int((1 - args.sparsity) * model_adapter.hidden_size)
     # round (down) to the nearest multiple of round_interval
     new_embedding_dimension -= new_embedding_dimension % args.round_interval
-
     logging.info(
         f"New embedding dimension: {new_embedding_dimension} (sparsity {100*(1 - new_embedding_dimension / model_adapter.hidden_size):.4f} %)"
     )
@@ -278,102 +275,6 @@ def slicing_main(args: argparse.Namespace) -> None:
     sliced_param_count = sum(int(p.nelement()) for p in model.parameters())
     sliced_fraction = 1.0 - sliced_param_count / original_param_count
     logging.info(f'Sliced model parameters: {sliced_param_count:,d} (sliced fraction {sliced_fraction:.4f})')
-
-
-@torch.no_grad()
-def calibrate_final_norm_ols(
-    dense_model: nn.Module, 
-    sliced_model: nn.Module, 
-    dataloader: torch.utils.data.DataLoader, 
-    Q_global: torch.Tensor, 
-    d_new: int, 
-    device: torch.device, 
-    eps: float = 1e-8
-) -> None:
-    """
-    Calibrates the final norm of the sliced model using Channel-Wise OLS.
-    """
-    dense_model.eval()
-    sliced_model.eval()
-    Q_s = Q_global[:, :d_new].to(device=device, dtype=torch.float32)
-
-    def get_final_norm(m):
-        if hasattr(m, "model") and hasattr(m.model, "norm"): return m.model.norm
-        if hasattr(m, "transformer") and hasattr(m.transformer, "ln_f"): return m.transformer.ln_f
-        if hasattr(m, "norm"): return m.norm
-        raise ValueError("Final norm not found.")
-
-    dense_norm = get_final_norm(dense_model)
-    sliced_norm = get_final_norm(sliced_model)
-    has_bias = sliced_norm.bias is not None
-
-    # Tensors to accumulate sufficient statistics per channel (using float64)
-    sum_uu = torch.zeros(d_new, dtype=torch.float64, device=device)
-    sum_uy = torch.zeros(d_new, dtype=torch.float64, device=device)
-    if has_bias:
-        sum_u = torch.zeros(d_new, dtype=torch.float64, device=device)
-        sum_y = torch.zeros(d_new, dtype=torch.float64, device=device)
-
-    total_tokens = 0
-    activations = {}
-
-    # Register hooks: Dense target gets output, Sliced gets input
-    t_handle = dense_norm.register_forward_hook(lambda m, i, o: activations.update({"dense_out": o.detach()}))
-    s_handle = sliced_norm.register_forward_hook(lambda m, i, o: activations.update({"sliced_in": i[0].detach()}))
-
-    logging.info("Accumulating statistics for Channel-Wise OLS Calibration...")
-    for batch in tqdm(dataloader, desc="OLS Calibration"):
-        input_ids = batch["input_ids"].to(device) if isinstance(batch, dict) else batch[0].to(device)
-        
-        _ = dense_model(input_ids)
-        _ = sliced_model(input_ids)
-
-        # Target: Fully scaled output projected to global basis
-        Y_dense = activations["dense_out"].to(torch.float32)
-        Y_target = torch.matmul(Y_dense, Q_s)
-        Y_flat = Y_target.reshape(-1, d_new).to(torch.float64)
-        
-        # Source: Parameter-free normalized input
-        X_sliced_in = activations["sliced_in"].to(torch.float32)
-        if has_bias:
-            mean = X_sliced_in.mean(-1, keepdim=True)
-            var = (X_sliced_in - mean).pow(2).mean(-1, keepdim=True)
-            U_pruned = (X_sliced_in - mean) * torch.rsqrt(var + getattr(sliced_norm, "eps", 1e-5))
-        else:
-            var = X_sliced_in.pow(2).mean(-1, keepdim=True)
-            U_pruned = X_sliced_in * torch.rsqrt(var + getattr(sliced_norm, "variance_epsilon", 1e-6))
-        
-        U_flat = U_pruned.reshape(-1, d_new).to(torch.float64)
-        
-        # Accumulate statistics
-        sum_uu += (U_flat * U_flat).sum(dim=0)
-        sum_uy += (U_flat * Y_flat).sum(dim=0)
-        if has_bias:
-            sum_u += U_flat.sum(dim=0)
-            sum_y += Y_flat.sum(dim=0)
-        
-        total_tokens += U_flat.shape[0]
-
-    t_handle.remove()
-    s_handle.remove()
-
-    # Calculate optimal parameters and inject them back into the model
-    if has_bias:
-        mean_u = sum_u / total_tokens
-        mean_y = sum_y / total_tokens
-        cov_uy = (sum_uy / total_tokens) - (mean_u * mean_y)
-        var_u = (sum_uu / total_tokens) - (mean_u ** 2)
-        
-        gamma = cov_uy / (var_u + eps)
-        beta = mean_y - (gamma * mean_u)
-        
-        sliced_norm.weight.data.copy_(gamma.to(sliced_norm.weight.dtype))
-        sliced_norm.bias.data.copy_(beta.to(sliced_norm.bias.dtype))
-        logging.info("Applied Channel-Wise OLS (gamma and beta).")
-    else:
-        gamma = sum_uy / (sum_uu + eps)
-        sliced_norm.weight.data.copy_(gamma.to(sliced_norm.weight.dtype))
-        logging.info("Applied Channel-Wise OLS (gamma only).")
 
 
 if __name__ == "__main__":
