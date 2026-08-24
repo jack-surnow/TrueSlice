@@ -8,7 +8,7 @@ from tqdm import tqdm
 from .config import config
 from .model_adapter import LayerAdapter, ModelAdapter
 from .model_utils import get_layer0_inputs, get_signals
-from .slicing_scheduler import ConfigSlicingScheduler, ConstSlicingScheduler, SlicingScheduler
+from .slicing_scheduler import SlicingScheduler
 from .utils import cleanup_memory, map_tensors
 
 from slicegpt import rotate

@@ -4,7 +4,6 @@
 import logging
 
 import datasets
-from datasets import load_from_disk
 import torch
 from torch.utils.data import DataLoader, Dataset, SubsetRandomSampler
 from transformers import PreTrainedTokenizerBase

@@ -164,13 +164,6 @@ def slicing_main(args: argparse.Namespace) -> None:
     dataset = data_utils.get_dataset(args.cal_dataset)
     train_dataset = dataset["train"]
     test_dataset = dataset["test"] if "test" in dataset else dataset["validation"]
-    if len(train_dataset) > 5000:
-        logging.info(f"truncating training set of len: {len(train_dataset)}")
-        train_dataset = train_dataset.select(range(5000))
-    if len(test_dataset) > 1000:
-        logging.info(f"truncating testing set of len: {len(test_dataset)}")
-        test_dataset = test_dataset.select(range(1000))
-
     train_loader = data_utils.prepare_dataloader(
         dataset=train_dataset,
         tokenizer=tokenizer,
