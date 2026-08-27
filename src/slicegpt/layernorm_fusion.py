@@ -4,7 +4,9 @@
 import logging
 from typing import Callable, Iterable, Optional, TypeVar
 
+import math
 import torch
+import torch.nn as nn
 from torch.nn import Linear, Module, Parameter
 
 from .model_adapter import ModelAdapter
@@ -170,3 +172,44 @@ def fuse_ln_linear(layernorm: Module, linear_layers: Iterable[Linear]) -> None:
                 linear.bias = Parameter(torch.zeros(linear.out_features, dtype=torch.float64))
             linear.bias.data = linear.bias.data.double() + torch.matmul(W_, layernorm.bias.double())
             linear.bias.data = linear.bias.data.to(linear_dtype)
+
+
+def global_restore_norms(model_adapter: ModelAdapter, d_new) -> None:
+    logging.info("Restoring original norm layers with identity parameters")
+    
+    model_param = next(iter(model_adapter.model.parameters()))
+    target_device = model_param.device
+    target_dtype = model_param.dtype
+
+    config = model_adapter.model.config
+    eps = getattr(config, "rms_norm_eps", 
+          getattr(config, "layer_norm_eps", 
+          getattr(config, "layer_norm_epsilon", 1e-5)))
+
+    D_original = model_adapter.hidden_size
+    scale_factor = math.sqrt(D_original / d_new)
+
+    def create_norm() -> nn.Module:
+        norm_layer = model_adapter.original_layer_norm_type(d_new, eps=eps)
+        norm_layer = norm_layer.to(device=target_device, dtype=target_dtype)
+
+        if hasattr(norm_layer, 'weight') and norm_layer.weight is not None:
+            nn.init.constant_(norm_layer.weight, scale_factor)
+
+        if hasattr(norm_layer, 'bias') and norm_layer.bias is not None:
+            nn.init.zeros_(norm_layer.bias)
+
+        return norm_layer
+
+    for layer_adapter in model_adapter.get_layers():
+        new_norm1 = create_norm()
+        layer_adapter.set_first_layernorm(new_norm1) 
+
+        if not model_adapter.parallel_blocks:
+            new_norm2 = create_norm()
+            layer_adapter.set_second_layernorm(new_norm2)
+
+    final_norm = create_norm()
+    model_adapter.set_pre_head_layernorm(final_norm)
+
+    logging.info("Restoration of original norm layers complete")

@@ -62,11 +62,19 @@ class LayerAdapter(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def set_first_layernorm(self, layernorm: Module) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
     def get_second_layernorm(self) -> Module:
         """
         Returns the second layer norm in the layer, usually the one before the MLP component.
         In the case where the layer has only one LayerNorm, should raise an exception.
         """
+        raise NotImplementedError
+
+    @abstractmethod
+    def set_second_layernorm(self, layernorm: Module) -> None:
         raise NotImplementedError
 
     @abstractmethod
@@ -268,6 +276,10 @@ class ModelAdapter(ABC):
         """
         Returns the layer norm (or equivalent) before the head of the model.
         """
+        raise NotImplementedError
+
+    @abstractmethod
+    def set_pre_head_layernorm(self, layernorm: Module) -> None:
         raise NotImplementedError
 
     @abstractmethod

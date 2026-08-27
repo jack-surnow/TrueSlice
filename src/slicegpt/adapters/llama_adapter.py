@@ -112,8 +112,14 @@ class LlamaLayerAdapter(LayerAdapter):
     def get_first_layernorm(self) -> Module:
         return self.layer.input_layernorm
 
+    def set_first_layernorm(self, layernorm: Module) -> None:
+        self.layer.input_layernorm = layernorm
+
     def get_second_layernorm(self) -> Module:
         return self.layer.post_attention_layernorm
+
+    def set_second_layernorm(self, layernorm: Module) -> None:
+        self.layer.post_attention_layernorm = layernorm
 
     def get_attention_inputs(self) -> list[Linear]:
         return [self.layer.self_attn.q_proj, self.layer.self_attn.k_proj, self.layer.self_attn.v_proj]
@@ -206,9 +212,13 @@ class LlamaModelAdapter(ModelAdapter):
         return [self.model.model.embed_tokens]
 
     def get_pre_head_layernorm(self) -> Module:
-        pre_head_layernorm = self.model.model.norm
-        assert isinstance(pre_head_layernorm, self.original_layer_norm_type)
-        return pre_head_layernorm
+        # pre_head_layernorm = self.model.model.norm
+        # assert isinstance(pre_head_layernorm, self.original_layer_norm_type)
+        # return pre_head_layernorm
+        return self.model.model.norm
+
+    def set_pre_head_layernorm(self, layernorm: Module) -> None:
+        self.model.model.norm = layernorm
 
     def get_lm_head(self) -> Linear:
         return self.model.lm_head

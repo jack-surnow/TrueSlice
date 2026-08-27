@@ -3,10 +3,11 @@
 set -e
 
 RUN_DENSE_PPL=0
-RUN_SLICEGPT=1
 RUN_TRUESLICE=1
+RUN_SLICEGPT=0
 
-BASE_PATH="/mnt/ML_Storage/models_global_slicing"
+# MODEL_ID="microsoft/phi-2"
+# MODEL_NAME="Phi-2-2.7B"
 
 MODEL_ID="meta-llama/Llama-3.2-1B"
 MODEL_NAME="Llama-3.2-1B"
@@ -18,7 +19,9 @@ CAL_SETS=("wikitext2")
 
 CAL_BATCH_SIZE=2
 EVAL_BATCH_SIZE=2
-DTYPE="bf16"
+DTYPE="fp32"
+
+BASE_PATH="/mnt/ML_Storage/models_global_slicing"
 
 if [ "${RUN_DENSE_PPL}" -eq 1 ]; then
   for CAL_SET in "${CAL_SETS[@]}"; do

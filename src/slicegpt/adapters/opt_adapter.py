@@ -133,8 +133,14 @@ class OPTLayerAdapter(LayerAdapter):
     def get_first_layernorm(self) -> Module:
         return self.layer.self_attn_layer_norm
 
+    def set_first_layernorm(self, layernorm: Module) -> None:
+        self.layer.self_attn_layer_norm = layernorm
+
     def get_second_layernorm(self) -> Module:
         return self.layer.final_layer_norm
+
+    def set_second_layernorm(self, layernorm: Module) -> None:
+            self.layer.final_layer_norm = layernorm
 
     def get_attention_inputs(self) -> list[Linear]:
         return [self.layer.self_attn.q_proj, self.layer.self_attn.k_proj, self.layer.self_attn.v_proj]
@@ -227,9 +233,13 @@ class OPTModelAdapter(ModelAdapter):
         return [self.model.model.decoder.embed_tokens, self.model.model.decoder.embed_positions]
 
     def get_pre_head_layernorm(self) -> Module:
-        pre_head_layernorm = self.model.model.decoder.final_layer_norm
-        assert pre_head_layernorm is not None
-        return pre_head_layernorm
+        # pre_head_layernorm = self.model.model.decoder.final_layer_norm
+        # assert pre_head_layernorm is not None
+        # return pre_head_layernorm
+        return self.model.model.decoder.final_layer_norm
+
+    def set_pre_head_layernorm(self, layernorm: Module) -> None:
+        self.model.model.decoder.final_layer_norm = layernorm
 
     def get_lm_head(self) -> Linear:
         return self.model.lm_head

@@ -191,23 +191,7 @@ def global_save_model(model_adapter, model, args):
     hf_config.hidden_size = new_hidden_size
     hf_config.tie_word_embeddings = False
     
-    # Extract the current PyTorch state dict
     state_dict = model.state_dict()
-    dtype = next(iter(state_dict.values())).dtype
-
-    # Restore parameterless Norms
-    for name, module in model.named_modules():
-        if "norm" in name.lower() or "ln" in name.lower():
-            weight_key = f"{name}.weight"
-            bias_key = f"{name}.bias"
-            
-            # If SliceGPT made the weight parameterless, inject an all-ones tensor
-            if weight_key not in state_dict:
-                state_dict[weight_key] = torch.ones(new_hidden_size, dtype=dtype, device="cpu")
-            
-            # If the original norm required a bias (like in OPT), inject an all-zeros tensor
-            if hasattr(module, "bias") and module.bias is not None and bias_key not in state_dict:
-                state_dict[bias_key] = torch.zeros(new_hidden_size, dtype=dtype, device="cpu")
 
     # Cannot be done using this rotation method as the final norm is fused into the lm_head
     

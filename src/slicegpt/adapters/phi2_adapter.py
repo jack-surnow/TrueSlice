@@ -116,7 +116,13 @@ class Phi2LayerAdapter(LayerAdapter):
     def get_first_layernorm(self) -> Module:
         return self.layer.input_layernorm
 
+    def set_first_layernorm(self, layernorm: Module) -> None:
+        self.layer.input_layernorm = layernorm
+
     def get_second_layernorm(self) -> Module:
+        return None
+
+    def set_second_layernorm(self, layernorm: Module) -> None:
         return None
 
     def get_attention_inputs(self) -> list[Linear]:
@@ -210,9 +216,13 @@ class Phi2ModelAdapter(ModelAdapter):
         return [self.model.model.embed_tokens]
 
     def get_pre_head_layernorm(self) -> Module:
-        pre_head_layernorm = self.model.model.final_layernorm
-        assert pre_head_layernorm is not None
-        return pre_head_layernorm
+        # pre_head_layernorm = self.model.model.final_layernorm
+        # assert pre_head_layernorm is not None
+        # return pre_head_layernorm
+        return self.model.model.final_layernorm
+
+    def set_pre_head_layernorm(self, layernorm: Module) -> None:
+        self.model.model.final_layernorm = layernorm
 
     def get_lm_head(self) -> Linear:
         return self.model.lm_head

@@ -1,8 +1,9 @@
 import logging
+from contextlib import contextmanager
+from typing import Generator, List, Dict, Any
 
-import numpy as np
-import torch
 import torch.nn as nn
+import torch
 from tqdm import tqdm
 
 from .config import config
@@ -12,7 +13,6 @@ from .slicing_scheduler import SlicingScheduler
 from .utils import cleanup_memory, map_tensors
 
 from slicegpt import rotate
-
 
 
 def global_slice_attention_inputs(layer_adapter: LayerAdapter, new_embedding_dimension: int) -> None:
@@ -284,126 +284,3 @@ def get_covariance(
         H = H_batch if H is None else H + H_batch
 
     return H
-
-
-
-@torch.no_grad()
-def global_calibrate_norms_ols(
-    dense_adapter: ModelAdapter,
-    sliced_adapter: ModelAdapter,
-    dataloader: torch.utils.data.DataLoader, 
-    d_new: int, 
-    device: torch.device,
-    apply_mask: bool = True,
-    eps: float = 1e-8
-) -> None:
-
-    dense_adapter.model.eval()
-    sliced_adapter.model.eval()
-
-    Q_global = sliced_adapter.Q_global
-
-    inps_dense, args_dense, kwargs_dense, ignore_masks_dense = [], [], [], []
-    for batch in dataloader:
-        inp_batch_dense, args_batch_dense, kwargs_batch_dense = get_layer0_inputs(dense_adapter, batch)
-        inps_dense.append(inp_batch_dense)
-        args_dense.append(args_batch_dense)
-        kwargs_dense.append(kwargs_batch_dense)
-        if apply_mask:
-            ignore_masks_dense.append(batch["attention_mask"])
-
-    inps_sliced, args_sliced, kwargs_sliced, ignore_masks_sliced = [], [], [], []
-    for batch in dataloader:
-        inp_batch_sliced, args_batch_sliced, kwargs_batch_sliced = get_layer0_inputs(sliced_adapter, batch)
-        inps_sliced.append(inp_batch_sliced)
-        args_sliced.append(args_batch_sliced)
-        kwargs_sliced.append(kwargs_batch_sliced)
-        if apply_mask:
-            ignore_masks_sliced.append(batch["attention_mask"])
-
-    optimal_norm_params = {}
-
-    layers = zip(dense_adapter.get_layers(), sliced_adapter.get_layers())
-    for idx, (dense_layer, sliced_layer) in enumerate(tqdm(layers, unit="layer", desc="Performing Chanel-wise OLS")):
-
-        dense_layer = dense_layer.to(config.device)
-        sliced_layer = sliced_layer.to(config.device)
-
-        acts = {}
-        def get_hook(name):
-            return lambda m, i, o: acts.update({name: o.detach().to(torch.float32)})
-
-        # Pass 1
-        h_d1 = dense_layer.get_first_layernorm().register_forward_hook(get_hook("d1"))
-        h_s1 = sliced_layer.get_first_layernorm().register_forward_hook(get_hook("s1"))
-
-        sum_uu1 = torch.zeros(d_new, dtype=torch.float64, device=device)
-        sum_uy1 = torch.zeros(d_new, dtype=torch.float64, device=device)
-
-        for i in range(len(inps_dense)):
-            _ = dense_layer.layer(*args_dense[i], **kwargs_dense[i])
-            _ = sliced_layer.layer(*args_sliced[i], **kwargs_sliced[i])
-
-            Y1 = torch.matmul(acts["d1"], Q_global).reshape(-1, d_new).to(torch.float64)
-            U1 = acts["s1"].reshape(-1, d_new).to(torch.float64)
-            sum_uu1 += (U1 * U1).sum(dim=0)
-            sum_uy1 += (U1 * Y1).sum(dim=0)
-
-        gamma1 = sum_uy1 / (sum_uu1 + eps)
-        optimal_norm_params[f"layer_{idx}_norm1_gamma"] = gamma1.clone()
-
-        h_d1.remove()
-        h_s1.remove()
-
-        # Pass 2
-        def modifier_hook1(m, i, o):
-            return o * gamma1.to(torch.float32)
-
-        h_mod1 = sliced_layer.get_first_layernorm().register_forward_hook(modifier_hook1)
-
-        h_d2 = dense_layer.get_second_layernorm().register_forward_hook(get_hook("d2"))
-        h_s2 = sliced_layer.get_second_layernorm().register_forward_hook(get_hook("s2"))
-
-        sum_uu2 = torch.zeros(d_new, dtype=torch.float64, device=device)
-        sum_uy2 = torch.zeros(d_new, dtype=torch.float64, device=device)
-
-        for i in range(len(inps_dense)):
-            _ = dense_layer.layer(*args_dense[i], **kwargs_dense[i])
-            _ = sliced_layer.layer(*args_sliced[i], **kwargs_sliced[i])
-
-            Y2 = torch.matmul(acts["d2"], Q_global).reshape(-1, d_new).to(torch.float64)
-            U2 = acts["s2"].reshape(-1, d_new).to(torch.float64)
-            sum_uu2 += (U2 * U2).sum(dim=0)
-            sum_uy2 += (U2 * Y2).sum(dim=0)
-
-        gamma2 = sum_uy2 / (sum_uu2 + eps)
-        optimal_norm_params[f"layer_{idx}_norm2_gamma"] = gamma2.clone()
-
-        h_d2.remove()
-        h_s2.remove()
-
-        # Pass 3
-        def modifier_hook2(m, i, o):
-            return o * gamma2.to(torch.float32)
-
-        h_mod2 = sliced_layer.get_second_layernorm().register_forward_hook(modifier_hook2)
-
-        for i in range(len(inps_dense)):
-            out_d = dense_layer.layer(*args_dense[i], **kwargs_dense[i])
-            out_s = sliced_layer.layer(*args_sliced[i], **kwargs_sliced[i])
-
-            if isinstance(out_d, tuple):
-                args_dense[i] = dense_layer.get_updated_args(out_d[0].detach(), args_dense[i])
-                args_sliced[i] = sliced_layer.get_updated_args(out_s[0].detach(), args_sliced[i])
-            else:
-                args_dense[i] = dense_layer.get_updated_args(out_d.detach(), args_dense[i])
-                args_sliced[i] = sliced_layer.get_updated_args(out_s.detach(), args_sliced[i])
-
-        h_mod1.remove()
-        h_mod2.remove()
-
-        dense_layer.layer.to("cpu")
-        sliced_layer.layer.to("cpu")
-        torch.cuda.empty_cache()
-
-    sliced_adapter.optimal_norm_params = optimal_norm_params

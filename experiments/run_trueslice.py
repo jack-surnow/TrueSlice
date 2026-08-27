@@ -215,24 +215,7 @@ def slicing_main(args: argparse.Namespace) -> None:
     scheduler = ConstSlicingScheduler(new_embedding_dimension)
     global_rotate.global_rotate_and_slice(model_adapter, train_loader, scheduler, final_orientation=args.final_orientation)
 
-
-    # logging.info("Loading fresh dense model for Final Norm Calibration...")
-
-    # dense_adapter, _ = hf_utils.get_model_and_tokenizer(
-    #     args.model, args.model_path, token=args.hf_token, dtype=config.dtype
-    # )
-
-    # Not yet functional
-    # global_rotate.global_calibrate_norms_ols(
-    #     dense_adapter=dense_adapter,
-    #     sliced_adapter=model_adapter,
-    #     dataloader=train_loader,
-    #     d_new=new_embedding_dimension,
-    #     device=config.device
-    # )
-
-    # del dense_adapter
-    # utils.cleanup_memory()
+    layernorm_fusion.global_restore_norms(model_adapter, new_embedding_dimension)
 
     if args.save_dir:
         hf_utils.global_save_model(model_adapter, model, args)
