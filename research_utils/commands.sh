@@ -2,15 +2,18 @@
 
 set -e
 
-RUN_DENSE_PPL=0
+RUN_DENSE_PPL=1
 RUN_TRUESLICE=1
-RUN_SLICEGPT=0
+RUN_SLICEGPT=1
 
 # MODEL_ID="microsoft/phi-2"
 # MODEL_NAME="Phi-2-2.7B"
 
-MODEL_ID="meta-llama/Llama-3.2-1B"
-MODEL_NAME="Llama-3.2-1B"
+# MODEL_ID="meta-llama/Llama-3.2-1B"
+# MODEL_NAME="Llama-3.2-1B"
+
+MODEL_ID="Qwen/Qwen3-4B"
+MODEL_NAME="Qwen3-4B"
 
 # SPARSITIES=(0.125 0.25 0.375 0.5)
 SPARSITIES=(0.125)
@@ -19,7 +22,7 @@ CAL_SETS=("wikitext2")
 
 CAL_BATCH_SIZE=2
 EVAL_BATCH_SIZE=2
-DTYPE="fp32"
+DTYPE="bf16"
 
 BASE_PATH="/mnt/ML_Storage/models_global_slicing"
 

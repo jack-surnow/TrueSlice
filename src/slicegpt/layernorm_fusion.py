@@ -64,6 +64,7 @@ def replace_modules(
         Module,
     ],
     replace_layers: bool,
+    ignore_names: list[str] = None,
 ) -> None:
     """Replace modules of given type using the supplied module factory.
 
@@ -77,7 +78,13 @@ def replace_modules(
         new_module_factory: a function that given a module that should be replaced
             produces a module to replace it with.
     """
+    if ignore_names is None:
+        ignore_names = []
+
     for name, module in root.named_children():
+        if name in ignore_names:
+            continue
+
         new_module = None
         if isinstance(module, type_to_replace):
             if replace_layers:  # layernorm_fusion.replace_layers case where transformer layers are replaced
@@ -85,7 +92,7 @@ def replace_modules(
             else:  # layernorm_fusion.fuse_modules case where layernorms are fused
                 new_module = new_module_factory(module)
         elif len(list(module.children())) > 0:
-            replace_modules(module, type_to_replace, new_module_factory, replace_layers)
+            replace_modules(module, type_to_replace, new_module_factory, replace_layers, ignore_names)
 
         if new_module is not None:
             setattr(root, name, new_module)
@@ -136,6 +143,7 @@ def fuse_modules(model_adapter: ModelAdapter) -> None:
         model_adapter.original_layer_norm_type,
         lambda _: RMSN(model_adapter.hidden_size),
         replace_layers=False,
+        ignore_names=["q_norm", "k_norm"],
     )
     logging.info("Fusing layernorm modules done")
 
@@ -186,8 +194,8 @@ def global_restore_norms(model_adapter: ModelAdapter, d_new) -> None:
           getattr(config, "layer_norm_eps", 
           getattr(config, "layer_norm_epsilon", 1e-5)))
 
-    D_original = model_adapter.hidden_size
-    scale_factor = math.sqrt(D_original / d_new)
+    d_original = model_adapter.hidden_size
+    scale_factor = math.sqrt(d_original / d_new)
 
     def create_norm() -> nn.Module:
         norm_layer = model_adapter.original_layer_norm_type(d_new, eps=eps)
