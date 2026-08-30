@@ -3,22 +3,35 @@
 set -e
 
 RUN_DENSE_PPL=1
-RUN_TRUESLICE=1
-RUN_SLICEGPT=1
+RUN_TRUESLICE=0
+RUN_SLICEGPT=0
 
-# MODEL_ID="microsoft/phi-2"
-# MODEL_NAME="Phi-2-2.7B"
+MODELS=(
+  # "microsoft/phi-2|Phi-2-2.7B"
+  "meta-llama/Llama-3.2-1B|Llama-3.2-1B"
+  # "meta-llama/Llama-3.2-3B|Llama-3.2-3B"
+  # "meta-llama/Llama-3.1-8B|Llama-3.1-8B"
+  # "Qwen/Qwen3-1.7B|Qwen3-1.7B"
+  # "Qwen/Qwen3-4B|Qwen3-4B"
+  # "Qwen/Qwen3-8B|Qwen3-8B"
+)
 
-# MODEL_ID="meta-llama/Llama-3.2-1B"
-# MODEL_NAME="Llama-3.2-1B"
+SPARSITIES_TRUESLICE=(
+  0.2783
+  0.3813
+  0.4843
+)
 
-MODEL_ID="Qwen/Qwen3-4B"
-MODEL_NAME="Qwen3-4B"
+SPARSITIES_SLICEGPT=(
+  0.3842
+  0.4970
+  0.6123
+)
 
-# SPARSITIES=(0.125 0.25 0.375 0.5)
-SPARSITIES=(0.125)
-
-CAL_SETS=("wikitext2")
+CAL_SETS=(
+  "wikitext2"
+  # "alpaca"
+)
 
 CAL_BATCH_SIZE=2
 EVAL_BATCH_SIZE=2
@@ -26,48 +39,25 @@ DTYPE="bf16"
 
 BASE_PATH="/mnt/ML_Storage/models_global_slicing"
 
-if [ "${RUN_DENSE_PPL}" -eq 1 ]; then
-  for CAL_SET in "${CAL_SETS[@]}"; do
-    echo "======================================================================"
-    echo "Running Perplexity Eval for ${MODEL_NAME}"
-    echo "Calibration Dataset: ${CAL_SET}"
-    echo "======================================================================"
+for MODEL_ENTRY in "${MODELS[@]}"; do
+  # Split the string into two variables using the pipe character
+  IFS="|" read -r MODEL_ID MODEL_NAME <<< "${MODEL_ENTRY}"
 
-    python experiments/run_slicegpt.py \
-      --model "${MODEL_ID}" \
-      --ppl-only \
-      --cal-dataset "${CAL_SET}" \
-      --cal-nsamples 128 \
-      --cal-batch-size "${CAL_BATCH_SIZE}" \
-      --cal-max-seqlen 2048 \
-      --seed 42 \
-      --final-orientation random \
-      --ppl-eval-seqlen 2048 \
-      --ppl-eval-batch-size "${EVAL_BATCH_SIZE}" \
-      --ppl-eval-nsamples 128 \
-      --dtype "${DTYPE}" \
-      --distribute-model \
-      --no-wandb
-  done
-fi
-
-if [ "${RUN_TRUESLICE}" -eq 1 ]; then
-  for CAL_SET in "${CAL_SETS[@]}"; do
-    for SPARSITY in "${SPARSITIES[@]}"; do
+  if [ "${RUN_DENSE_PPL}" -eq 1 ]; then
+    for CAL_SET in "${CAL_SETS[@]}"; do
       echo "======================================================================"
-      echo "Running TrueSlice for ${MODEL_NAME}"
-      echo "Sparsity: ${SPARSITY} | Calibration Dataset: ${CAL_SET}"
+      echo "Running Perplexity Eval for ${MODEL_NAME}"
+      echo "Calibration Dataset: ${CAL_SET}"
       echo "======================================================================"
 
       python experiments/run_trueslice.py \
         --model "${MODEL_ID}" \
-        --save-dir "${BASE_PATH}/${MODEL_NAME}_SLICEGPT_${SPARSITY}_${CAL_SET}" \
+        --ppl-only \
         --cal-dataset "${CAL_SET}" \
         --cal-nsamples 128 \
         --cal-batch-size "${CAL_BATCH_SIZE}" \
         --cal-max-seqlen 2048 \
         --seed 42 \
-        --sparsity "${SPARSITY}" \
         --final-orientation random \
         --ppl-eval-seqlen 2048 \
         --ppl-eval-batch-size "${EVAL_BATCH_SIZE}" \
@@ -76,33 +66,61 @@ if [ "${RUN_TRUESLICE}" -eq 1 ]; then
         --distribute-model \
         --no-wandb
     done
-  done
-fi
+  fi
 
-if [ "${RUN_SLICEGPT}" -eq 1 ]; then
-  for CAL_SET in "${CAL_SETS[@]}"; do
-    for SPARSITY in "${SPARSITIES[@]}"; do
-      echo "======================================================================"
-      echo "Running SliceGPT for ${MODEL_NAME}"
-      echo "Sparsity: ${SPARSITY} | Calibration Dataset: ${CAL_SET}"
-      echo "======================================================================"
+  if [ "${RUN_TRUESLICE}" -eq 1 ]; then
+    for CAL_SET in "${CAL_SETS[@]}"; do
+      for SPARSITY in "${SPARSITIES_TRUESLICE[@]}"; do
+        echo "======================================================================"
+        echo "Running TrueSlice for ${MODEL_NAME}"
+        echo "Sparsity: ${SPARSITY} | Calibration Dataset: ${CAL_SET}"
+        echo "======================================================================"
 
-      python experiments/run_slicegpt.py \
-        --model "${MODEL_ID}" \
-        --save-dir "${BASE_PATH}/${MODEL_NAME}_SLICEGPT_${SPARSITY}_${CAL_SET}" \
-        --cal-dataset "${CAL_SET}" \
-        --cal-nsamples 128 \
-        --cal-batch-size "${CAL_BATCH_SIZE}" \
-        --cal-max-seqlen 2048 \
-        --seed 42 \
-        --sparsity "${SPARSITY}" \
-        --final-orientation random \
-        --ppl-eval-seqlen 2048 \
-        --ppl-eval-batch-size "${EVAL_BATCH_SIZE}" \
-        --ppl-eval-nsamples 128 \
-        --dtype "${DTYPE}" \
-        --distribute-model \
-        --no-wandb
+        python experiments/run_trueslice.py \
+          --model "${MODEL_ID}" \
+          --save-dir "${BASE_PATH}/${MODEL_NAME}_SLICEGPT_${SPARSITY}_${CAL_SET}" \
+          --cal-dataset "${CAL_SET}" \
+          --cal-nsamples 128 \
+          --cal-batch-size "${CAL_BATCH_SIZE}" \
+          --cal-max-seqlen 2048 \
+          --seed 42 \
+          --sparsity "${SPARSITY}" \
+          --final-orientation random \
+          --ppl-eval-seqlen 2048 \
+          --ppl-eval-batch-size "${EVAL_BATCH_SIZE}" \
+          --ppl-eval-nsamples 128 \
+          --dtype "${DTYPE}" \
+          --distribute-model \
+          --no-wandb
+      done
     done
-  done
-fi
+  fi
+
+  if [ "${RUN_SLICEGPT}" -eq 1 ]; then
+    for CAL_SET in "${CAL_SETS[@]}"; do
+      for SPARSITY in "${SPARSITIES_SLICEGPT[@]}"; do
+        echo "======================================================================"
+        echo "Running SliceGPT for ${MODEL_NAME}"
+        echo "Sparsity: ${SPARSITY} | Calibration Dataset: ${CAL_SET}"
+        echo "======================================================================"
+
+        python experiments/run_slicegpt.py \
+          --model "${MODEL_ID}" \
+          --save-dir "${BASE_PATH}/${MODEL_NAME}_SLICEGPT_${SPARSITY}_${CAL_SET}" \
+          --cal-dataset "${CAL_SET}" \
+          --cal-nsamples 128 \
+          --cal-batch-size "${CAL_BATCH_SIZE}" \
+          --cal-max-seqlen 2048 \
+          --seed 42 \
+          --sparsity "${SPARSITY}" \
+          --final-orientation random \
+          --ppl-eval-seqlen 2048 \
+          --ppl-eval-batch-size "${EVAL_BATCH_SIZE}" \
+          --ppl-eval-nsamples 128 \
+          --dtype "${DTYPE}" \
+          --distribute-model \
+          --no-wandb
+      done
+    done
+  fi
+done

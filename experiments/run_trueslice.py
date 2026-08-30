@@ -4,12 +4,8 @@
 import argparse
 import logging
 import os
-import pathlib
-import shutil
 
 import torch
-import torch.nn as nn
-from tqdm import tqdm
 import wandb
 
 from slicegpt import data_utils, gpu_utils, hf_utils, layernorm_fusion, global_rotate, utils
@@ -162,14 +158,15 @@ def slicing_main(args: argparse.Namespace) -> None:
         dataset=test_dataset, tokenizer=tokenizer, batch_size=args.ppl_eval_batch_size
     )
 
+    dense_param_count = sum(int(p.nelement()) for p in model.parameters())
+    logging.info(f'Dense model parameters: {dense_param_count:,d}')
+
     # evaluate perplexity and exit if sliced model is loaded or if ppl_only is set
     if args.ppl_only:
         reset_model_device()
         dataset_ppl = gpu_utils.evaluate_ppl(model, model.config.pad_token_id, test_loader)
         logging.info(f'Loaded model perplexity: {dataset_ppl}')
         wandb.log({"original_ppl": dataset_ppl})
-        sliced_param_count = sum(int(p.nelement()) for p in model.parameters())
-        logging.info(f'Sliced model parameters: {sliced_param_count:,d}')
         return
 
     # original ppl
@@ -200,8 +197,8 @@ def slicing_main(args: argparse.Namespace) -> None:
         # run GC and cleanup GPU memory
         utils.cleanup_memory()
 
-    original_param_count = sum(int(p.nelement()) for p in model.parameters())
-    logging.info(f'Original model parameters: {original_param_count:,d}')
+    fused_param_count = sum(int(p.nelement()) for p in model.parameters())
+    logging.info(f'Fused model parameters: {fused_param_count:,d}')
 
     # compute new embedding dimension given the desired sparsity level
     new_embedding_dimension = int((1 - args.sparsity) * model_adapter.hidden_size)
@@ -226,7 +223,7 @@ def slicing_main(args: argparse.Namespace) -> None:
     wandb.log({"sliced_ppl": dataset_ppl})
 
     sliced_param_count = sum(int(p.nelement()) for p in model.parameters())
-    sliced_fraction = 1.0 - sliced_param_count / original_param_count
+    sliced_fraction = 1.0 - sliced_param_count / dense_param_count
     logging.info(f'Sliced model parameters: {sliced_param_count:,d} (sliced fraction {sliced_fraction:.4f})')
 
 if __name__ == "__main__":
