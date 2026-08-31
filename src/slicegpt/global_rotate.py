@@ -72,6 +72,8 @@ def global_rotate_and_slice_sequential(
     logging.info("global_rotate_and_slice_sequential: Profiling model layers")
 
     C_global = get_covariance(inps, ignore_masks)
+    del inps
+    cleanup_memory()
 
     for layer_adapter in tqdm(layers, unit="layer", desc="Accumulating Covariance"):
         mlp_ln_inputs, layer_outputs = get_signals(layer_adapter, args, kwargs)
@@ -180,6 +182,8 @@ def global_rotate_and_slice_parallel(
     logging.info("global_rotate_and_slice_parallel: Profiling model layers")
 
     C_global = get_covariance(inps, ignore_masks)
+    del inps
+    cleanup_memory()
 
     for layer_adapter in tqdm(layers, unit="layer", desc="Accumulating Covariance"):
         layer = layer_adapter.layer.to(config.device)
@@ -282,5 +286,6 @@ def get_covariance(
         X_batch = X_batch.double().to(device=config.device)
         H_batch = torch.sum(X_batch.mT @ X_batch, dim=0)  # sum over the batch dimension.
         H = H_batch if H is None else H + H_batch
+        del X_batch, H_batch
 
     return H

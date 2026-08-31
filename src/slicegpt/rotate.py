@@ -516,6 +516,7 @@ def pca_calc(
         X_batch = X_batch.double().to(device=config.device)
         H_batch = torch.sum(X_batch.mT @ X_batch, dim=0)  # sum over the batch dimension.
         H = H_batch if H is None else H + H_batch
+        del X_batch, H_batch
 
     damp = 0.01 * torch.mean(torch.diag(H))
     diag = torch.arange(H.shape[-1]).to(device=config.device)

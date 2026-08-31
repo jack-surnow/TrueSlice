@@ -5,6 +5,7 @@ import argparse
 import logging
 import os
 
+import math
 import torch
 import wandb
 
@@ -28,7 +29,7 @@ def slicing_arg_parser(interactive: bool = True) -> argparse.Namespace:
         default=None,
         help="Path to load the model and tokenizer from (required for local models, not required for HF models)",
     )
-    parser.add_argument("--dtype", type=str, help="Data type to use.", choices=["fp32", "fp16", "bf16"], default="fp16")
+    parser.add_argument("--dtype", type=str, help="Data type to use.", choices=["fp32", "fp16", "bf16", "auto"], default="fp16")
     parser.add_argument(
         "--cal-dataset",
         type=str,
@@ -112,6 +113,8 @@ def process_slicing_args(args):
         config.dtype = torch.float32
     elif args.dtype == "bf16":
         config.dtype = torch.bfloat16
+    elif args.dtype == "auto":
+        config.dtype = None
     else:
         raise argparse.ArgumentTypeError(f"Data type should be one of 'fp16', 'fp32'")
 
@@ -184,26 +187,16 @@ def slicing_main(args: argparse.Namespace) -> None:
     # fuse layernorms and add rotations to skip connections
     layernorm_fusion.fuse_modules(model_adapter)
 
-    # don't run this on large and/or distributed models
-    if args.eval_fused_model and not args.distribute_model:
-        model.to(config.device)
-
-        dataset_ppl = gpu_utils.evaluate_ppl(model, model.config.pad_token_id, test_loader)
-        logging.info(f'Post-fusion: {dataset_ppl:.4f}')
-        wandb.log({"post_fusion_ppl": dataset_ppl})
-
-        model.cpu()
-
-        # run GC and cleanup GPU memory
-        utils.cleanup_memory()
 
     fused_param_count = sum(int(p.nelement()) for p in model.parameters())
     logging.info(f'Fused model parameters: {fused_param_count:,d}')
 
     # compute new embedding dimension given the desired sparsity level
-    new_embedding_dimension = int((1 - args.sparsity) * model_adapter.hidden_size)
+    # new_embedding_dimension = int((1 - args.sparsity) * model_adapter.hidden_size)
     # round (down) to the nearest multiple of round_interval
-    new_embedding_dimension -= new_embedding_dimension % args.round_interval
+    # new_embedding_dimension -= new_embedding_dimension % args.round_interval
+
+    new_embedding_dimension = math.ceil(model_adapter.hidden_size * (1 - args.sparsity) / args.round_interval) * args.round_interval
 
     logging.info(
         f"New embedding dimension: {new_embedding_dimension} (sparsity {100*(1 - new_embedding_dimension / model_adapter.hidden_size):.4f} %)"
@@ -217,14 +210,17 @@ def slicing_main(args: argparse.Namespace) -> None:
     if args.save_dir:
         hf_utils.global_save_model(model_adapter, model, args)
 
+    sliced_param_count = sum(int(p.nelement()) for p in model.parameters())
+    sliced_fraction = 1.0 - sliced_param_count / dense_param_count
+    logging.info(f'Sliced model parameters: {sliced_param_count:,d} (sliced fraction {sliced_fraction:.4f})')
+
+    utils.cleanup_memory()
+
     reset_model_device()
     dataset_ppl = gpu_utils.evaluate_ppl(model, model.config.pad_token_id, test_loader)
     logging.info(f'After rotating and slicing {dataset_ppl:.4f}')
     wandb.log({"sliced_ppl": dataset_ppl})
 
-    sliced_param_count = sum(int(p.nelement()) for p in model.parameters())
-    sliced_fraction = 1.0 - sliced_param_count / dense_param_count
-    logging.info(f'Sliced model parameters: {sliced_param_count:,d} (sliced fraction {sliced_fraction:.4f})')
 
 if __name__ == "__main__":
     utils.configure_logging(log_to_console=True, log_to_file=False, level=logging.INFO)

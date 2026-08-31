@@ -6,7 +6,7 @@ import pathlib
 from typing import Any
 
 import torch
-from transformers import AutoTokenizer, PreTrainedTokenizerBase
+from transformers import AutoConfig, AutoTokenizer, PreTrainedTokenizerBase
 
 from .layernorm_fusion import fuse_modules, replace_layers
 from .model_adapter import ModelAdapter, SlicingConfig
@@ -41,13 +41,41 @@ def do_not_initialize(func):
     return wrapper
 
 
+def resolve_model_dtype(
+    model_path: str,
+    dtype: torch.dtype | None = None,
+    token: str | bool | None = None,
+    local_files_only: bool = False,
+) -> torch.dtype:
+    """
+    Resolve the torch.dtype from Hugging Face config if dtype is 'auto' or None.
+    """
+    if isinstance(dtype, torch.dtype):
+        return dtype
+
+    config = AutoConfig.from_pretrained(
+        model_path,
+        token=token,
+        local_files_only=local_files_only,
+    )
+    config_dtype = getattr(config, "torch_dtype", None)
+
+    if isinstance(config_dtype, torch.dtype):
+        return config_dtype
+    
+    if isinstance(config_dtype, str) and hasattr(torch, config_dtype):
+        return getattr(torch, config_dtype)
+
+    return dtype
+
+
 @do_not_initialize
 def get_model_and_tokenizer(
     model_name: str,
     model_path: str | None = None,
     *,
     uninitialized: bool = False,
-    dtype: torch.dtype = torch.float16,
+    dtype: torch.dtype | None = None,
     token: str | bool | None = None,
 ) -> tuple[ModelAdapter, PreTrainedTokenizerBase]:
     """
@@ -81,18 +109,26 @@ def get_model_and_tokenizer(
     if not local_model:
         model_path = model_name
 
+    resolved_dtype = resolve_model_dtype(
+        model_path=model_path,
+        dtype=dtype,
+        token=token,
+        local_files_only=local_model,
+    )
+
     logging.info(
-        f"Loading %s config %s from %s",
+        f"Loading %s config %s from %s with dtype %s",
         model_name,
         "and model weights" if not uninitialized else "",
         model_path if local_model else 'Hugging Face',
+        resolved_dtype,
     )
 
     model_adapter = ModelAdapter.from_model(
         model_name,
         model_path=model_path,
         model_type=model_type,
-        dtype=dtype,
+        dtype=resolved_dtype,
         local_files_only=local_model,
         token=token,
     )

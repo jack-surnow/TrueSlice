@@ -2,31 +2,22 @@
 
 set -e
 
-RUN_DENSE_PPL=1
-RUN_TRUESLICE=0
-RUN_SLICEGPT=0
+RUN_DENSE_PPL=0
+RUN_TRUESLICE=1
+RUN_SLICEGPT=1
 
 MODELS=(
-  # "microsoft/phi-2|Phi-2-2.7B"
-  "meta-llama/Llama-3.2-1B|Llama-3.2-1B"
+  # "meta-llama/Llama-3.2-1B|Llama-3.2-1B"
   # "meta-llama/Llama-3.2-3B|Llama-3.2-3B"
-  # "meta-llama/Llama-3.1-8B|Llama-3.1-8B"
+  "meta-llama/Llama-3.1-8B|Llama-3.1-8B"
   # "Qwen/Qwen3-1.7B|Qwen3-1.7B"
   # "Qwen/Qwen3-4B|Qwen3-4B"
   # "Qwen/Qwen3-8B|Qwen3-8B"
+  # "microsoft/Phi-3-mini-128k-instruct|Phi-3-mini"
 )
 
-SPARSITIES_TRUESLICE=(
-  0.2783
-  0.3813
-  0.4843
-)
-
-SPARSITIES_SLICEGPT=(
-  0.3842
-  0.4970
-  0.6123
-)
+SPARSITIES_TRUESLICE=(0.125000 0.250000 0.375000 0.500000)
+SPARSITIES_SLICEGPT=(0.222168 0.333985 0.448731 0.566651)
 
 CAL_SETS=(
   "wikitext2"
@@ -35,7 +26,7 @@ CAL_SETS=(
 
 CAL_BATCH_SIZE=2
 EVAL_BATCH_SIZE=2
-DTYPE="bf16"
+DTYPE="auto"
 
 BASE_PATH="/mnt/ML_Storage/models_global_slicing"
 
@@ -85,6 +76,7 @@ for MODEL_ENTRY in "${MODELS[@]}"; do
           --cal-max-seqlen 2048 \
           --seed 42 \
           --sparsity "${SPARSITY}" \
+          --round-interval 1 \
           --final-orientation random \
           --ppl-eval-seqlen 2048 \
           --ppl-eval-batch-size "${EVAL_BATCH_SIZE}" \
@@ -113,6 +105,7 @@ for MODEL_ENTRY in "${MODELS[@]}"; do
           --cal-max-seqlen 2048 \
           --seed 42 \
           --sparsity "${SPARSITY}" \
+          --round-interval 1 \
           --final-orientation random \
           --ppl-eval-seqlen 2048 \
           --ppl-eval-batch-size "${EVAL_BATCH_SIZE}" \

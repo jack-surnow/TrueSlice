@@ -111,7 +111,7 @@ def fuse_modules(model_adapter: ModelAdapter) -> None:
 
     # make a copy of the weights in the lm head, which are shared with embeddings...
     head = model_adapter.get_lm_head()
-    head.weight = Parameter(head.weight.clone())
+    head.weight = Parameter(head.weight.clone().detach())
 
     # We add the mean subtraction to the first embeddings
     for W in model_adapter.get_embeddings():

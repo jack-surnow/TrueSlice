@@ -82,7 +82,7 @@ def get_signals(
 
     def hook_fn(_, args: tuple, _output: Any) -> None:
         inp = args[0]  # Position in RMSN.forward args
-        mlp_ln_inputs.append(inp.cpu())
+        mlp_ln_inputs.append(inp.detach().cpu())
 
     second_layernorm = layer_adapter.get_second_layernorm()
     assert isinstance(second_layernorm, RMSN)

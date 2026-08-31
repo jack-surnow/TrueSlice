@@ -151,7 +151,7 @@ def calc_trueslice_params(config, d_model, d_new) -> int:
     I = config["intermediate_dim"]
     V = config["vocab_size"]
     
-    head_dim = config.get("head_dim", d_new // config["num_q_heads"])
+    head_dim = config.get("head_dim", d_model // config["num_q_heads"])
     d_q = config["num_q_heads"] * head_dim
     d_kv = config["num_kv_heads"] * head_dim
 
@@ -180,9 +180,10 @@ def calc_slicegpt_params(config, d_model, d_new):
     I = config["intermediate_dim"]
     V = config["vocab_size"]
     
-    head_dim = config.get("head_dim", d_new // config["num_q_heads"])
+    head_dim = config.get("head_dim", d_model // config["num_q_heads"])
     d_q = config["num_q_heads"] * head_dim
     d_kv = config["num_kv_heads"] * head_dim
+
     is_parallel = config.get("is_parallel", False)
 
     # Slicegpt embeddings and head params are forceably untied during process
@@ -250,7 +251,8 @@ def find_optimal_sparsities(config, global_target_sparsity, dense_param_count, b
         else:
             low_blocks = mid_blocks + 1
 
-    sparsity_trueslice = 1 - (best_d_trueslice / d_model)
+    raw_sparsity_trueslice = 1 - (best_d_trueslice / d_model)
+    sparsity_trueslice = math.ceil(raw_sparsity_trueslice * 1000000) / 1000000
 
     # Find best slicegpt cut, param count must be at minimum equal to trueslice param count
     best_d_slicegpt = d_model
@@ -272,7 +274,8 @@ def find_optimal_sparsities(config, global_target_sparsity, dense_param_count, b
         else:
             low_blocks = mid_blocks + 1
             
-    sparsity_slicegpt = 1 - (best_d_slicegpt / d_model)
+    raw_sparsity_slicegpt = 1 - (best_d_slicegpt / d_model)
+    sparsity_slicegpt = math.ceil(raw_sparsity_slicegpt * 1000000) / 1000000
     
     return {
         "global_target_params": global_target_params,
@@ -295,6 +298,9 @@ for name, cfg in models.items():
     dense_param_count = calc_global_params(cfg, cfg["hidden_dim"])
     
     print(f"\n{name} (Base: {dense_param_count:,})")
+
+    list_trueslice = []
+    list_slicegpt = []
     
     # Define and print the headers
     headers = (
@@ -302,8 +308,8 @@ for name, cfg in models.items():
         f"{'Targ Params':<14} | "
         f"{'TS D':<6} | "
         f"{'TS Params':<14} | "
-        f"{'Req TS %':<10} | "
-        f"{'Act TS %':<10} | "
+        f"{'Req TS':<10} | "
+        f"{'Act TS':<10} | "
         f"{'SG D':<6} | "
         f"{'SG Params':<14} | "
         f"{'Req SG %':<10} | "
@@ -314,14 +320,23 @@ for name, cfg in models.items():
     
     for s in sparsities:
         result = find_optimal_sparsities(cfg, s, dense_param_count, block_size=block_size)
+
+        list_trueslice.append(f"{result['required_sparsity_trueslice']:>9.6f}")
+        list_slicegpt.append(f"{result['required_sparsity_slicegpt']:>9.6f}")
         
         print(f"{s * 100:>5.1f}%    | "
               f"{result['global_target_params']:<14,} | "
               f"{result['best_d_trueslice']:<6} | "
               f"{result['best_params_trueslice']:<14,} | "
-              f"{result['required_sparsity_trueslice'] * 100:>9.3f}% | "
-              f"{result['actual_trueslice_cut'] * 100:>9.3f}% | "
+              f"{result['required_sparsity_trueslice']:>9.6f} | "
+              f"{result['actual_trueslice_cut'] * 100:>9.4f}% | "
               f"{result['best_d_slicegpt']:<6} | "
               f"{result['best_params_slicegpt']:<14,} | "
-              f"{result['required_sparsity_slicegpt'] * 100:>9.3f}% | "
-              f"{result['actual_slicegpt_cut'] * 100:>8.3f}%")
+              f"{result['required_sparsity_slicegpt']:>9.6f} | "
+              f"{result['actual_slicegpt_cut'] * 100:>8.4f}%")
+
+    trueslice_str = " ".join(x.strip() for x in list_trueslice)
+    slicegpt_str = " ".join(x.strip() for x in list_slicegpt)
+
+    print(f"SPARSITIES_TRUESLICE=({trueslice_str})")
+    print(f"SPARSITIES_SLICEGPT=({slicegpt_str})")
