@@ -1,24 +1,29 @@
 import math
 
 models = {
-    "Phi-2 (2.7B)": {
-        "vocab_size": 51200, "hidden_dim": 2560, "intermediate_dim": 10240,
-        "num_layers": 32, "num_q_heads": 32, "num_kv_heads": 32, 
-        "mlp_type": "standard", "is_parallel": True,
-        "q_bias": True, "k_bias": True, "v_bias": True, "dense_bias": True, 
-        "fc1_bias": True, "fc2_bias": True, "lm_head_bias": True, "norm_type": "layernorm"
-    },
+    # "Phi-2 (2.7B)": {
+    #     "vocab_size": 51200, "hidden_dim": 2560, "intermediate_dim": 10240,
+    #     "num_layers": 32, "num_q_heads": 32, "num_kv_heads": 32, 
+    #     "mlp_type": "standard", "is_parallel": True,
+    #     "q_bias": True, "k_bias": True, "v_bias": True, "dense_bias": True, 
+    #     "fc1_bias": True, "fc2_bias": True, "lm_head_bias": True, "norm_type": "layernorm"
+    # },
+    # "OPT (6.7B)": {
+    #     "vocab_size": 50272, "hidden_dim": 4096, "intermediate_dim": 16384,
+    #     "num_layers": 32, "num_q_heads": 32, "num_kv_heads": 32, 
+    #     "mlp_type": "standard", "q_bias": True, "k_bias": True, "v_bias": True,
+    #     "dense_bias": True, "fc1_bias": True, "fc2_bias": True,
+    #     "lm_head_bias": True, "pos_embeddings": 2050, "norm_type": "layernorm",
+    # },
     "Phi-3-Mini (3.8B)": {
         "vocab_size": 32064, "hidden_dim": 3072, "intermediate_dim": 8192,
         "num_layers": 32, "num_q_heads": 32, "num_kv_heads": 32, 
         "mlp_type": "gated",
     },
-    "OPT (6.7B)": {
-        "vocab_size": 50272, "hidden_dim": 4096, "intermediate_dim": 16384,
-        "num_layers": 32, "num_q_heads": 32, "num_kv_heads": 32, 
-        "mlp_type": "standard", "q_bias": True, "k_bias": True, "v_bias": True,
-        "dense_bias": True, "fc1_bias": True, "fc2_bias": True,
-        "lm_head_bias": True, "pos_embeddings": 2050, "norm_type": "layernorm",
+    "Phi-3-Small (7B)": {
+        "vocab_size": 100352, "hidden_dim": 4096, "intermediate_dim": 14336,
+        "num_layers": 32, "num_q_heads": 32, "num_kv_heads": 8, 
+        "mlp_type": "gated",
     },
     "Llama-3.2 (1B)": {
         "vocab_size": 128256, "hidden_dim": 2048, "intermediate_dim": 8192,
@@ -290,7 +295,7 @@ def find_optimal_sparsities(config, global_target_sparsity, dense_param_count, b
     }
 
 
-sparsities = [0.125, 0.25, 0.375, 0.50]
+sparsities = [0.1, 0.2, 0.3]
 block_size = 1
 
 for name, cfg in models.items():
