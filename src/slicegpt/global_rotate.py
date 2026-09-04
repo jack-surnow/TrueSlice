@@ -71,18 +71,32 @@ def global_rotate_and_slice_sequential(
     # Profiling model layers
     logging.info("global_rotate_and_slice_sequential: Profiling model layers")
 
-    C_global = get_covariance(inps, ignore_masks)
-    del inps
+    # C_global = get_covariance(inps, ignore_masks)
+    # del inps
+
+    C_inps_raw = get_covariance(inps, ignore_masks)
+    C_global = C_inps_raw / torch.trace(C_inps_raw)
+    del inps, C_inps_raw
+
     cleanup_memory()
 
     for layer_adapter in tqdm(layers, unit="layer", desc="Accumulating Covariance"):
         mlp_ln_inputs, layer_outputs = get_signals(layer_adapter, args, kwargs)
 
         # Acculumate without normalization
-        C_global += get_covariance(mlp_ln_inputs, ignore_masks)
-        C_global += get_covariance(layer_outputs, ignore_masks)
+        # C_global += get_covariance(mlp_ln_inputs, ignore_masks)
+        # C_global += get_covariance(layer_outputs, ignore_masks)
 
-        del mlp_ln_inputs
+        # del mlp_ln_inputs
+
+        # Acculumate with normalization
+        C_mlp = get_covariance(mlp_ln_inputs, ignore_masks)
+        C_out = get_covariance(layer_outputs, ignore_masks)
+
+        C_global += C_mlp / torch.trace(C_mlp)
+        C_global += C_out / torch.trace(C_out)
+
+        del mlp_ln_inputs, C_mlp, C_out
 
         for i, out in enumerate(layer_outputs):
             clean_out = out.detach().cpu().clone()
@@ -181,8 +195,13 @@ def global_rotate_and_slice_parallel(
     # Profiling model layers
     logging.info("global_rotate_and_slice_parallel: Profiling model layers")
 
-    C_global = get_covariance(inps, ignore_masks)
-    del inps
+    # C_global = get_covariance(inps, ignore_masks)
+    # del inps
+    
+    C_inps_raw = get_covariance(inps, ignore_masks)
+    C_global = C_inps_raw / torch.trace(C_inps_raw)
+    del inps, C_inps_raw
+
     cleanup_memory()
 
     for layer_adapter in tqdm(layers, unit="layer", desc="Accumulating Covariance"):
@@ -202,8 +221,14 @@ def global_rotate_and_slice_parallel(
             out = out.cpu()
             outputs.append(out)
 
-        # Accumulate without normalization
-        C_global += get_covariance(outputs, ignore_masks)
+        # Acculumate without normalization
+        # C_global += get_covariance(outputs, ignore_masks)
+
+        # Accumulate with normalization
+        C_layer = get_covariance(outputs, ignore_masks)
+        C_global += C_layer / torch.trace(C_layer)
+
+        del C_layer
 
         for i, out in enumerate(outputs):
             clean_out = out.detach().cpu().clone()

@@ -195,10 +195,10 @@ def global_restore_norms(model_adapter: ModelAdapter, d_new) -> None:
           getattr(config, "layer_norm_epsilon", 1e-5)))
 
     d_original = model_adapter.hidden_size
-    scale_factor = math.sqrt(d_original / d_new)
+    standard_scale = math.sqrt(d_original / d_new)
 
-    def create_norm() -> nn.Module:
-        norm_layer = model_adapter.original_layer_norm_type(d_new, eps=eps)
+    def create_norm(dim: int,scale_factor: float) -> nn.Module:
+        norm_layer = model_adapter.original_layer_norm_type(dim, eps=eps)
         norm_layer = norm_layer.to(device=target_device, dtype=target_dtype)
 
         if hasattr(norm_layer, 'weight') and norm_layer.weight is not None:
@@ -210,14 +210,11 @@ def global_restore_norms(model_adapter: ModelAdapter, d_new) -> None:
         return norm_layer
 
     for layer_adapter in model_adapter.get_layers():
-        new_norm1 = create_norm()
-        layer_adapter.set_first_layernorm(new_norm1) 
+        layer_adapter.set_first_layernorm(create_norm(d_new, standard_scale)) 
 
         if not model_adapter.parallel_blocks:
-            new_norm2 = create_norm()
-            layer_adapter.set_second_layernorm(new_norm2)
+            layer_adapter.set_second_layernorm(create_norm(d_new, standard_scale))
 
-    final_norm = create_norm()
-    model_adapter.set_pre_head_layernorm(final_norm)
+    model_adapter.set_pre_head_layernorm(create_norm(d_new, standard_scale))
 
     logging.info("Restoration of original norm layers complete")
