@@ -2,7 +2,7 @@
 
 set -e
 
-RUN_DENSE_PPL=1
+RUN_DENSE_PPL=0
 RUN_TRUESLICE=1
 RUN_SLICEGPT=0
 
@@ -12,18 +12,29 @@ MODELS=(
   "meta-llama/Llama-3.1-8B|Llama-3.1-8B"
   # "Qwen/Qwen3-1.7B|Qwen3-1.7B"
   # "Qwen/Qwen3-4B|Qwen3-4B"
-  # "Qwen/Qwen3-8B|Qwen3-8B"
+  "Qwen/Qwen3-8B|Qwen3-8B"
+  # "Qwen/Qwen3-14B|Qwen3-14B"
   # "microsoft/Phi-3-mini-4k-instruct|Phi-3-4B"
   # "microsoft/Phi-3-small-8k-instruct|Phi-3-7B"
 )
 
-SPARSITIES_TRUESLICE=(0.099854 0.199952 0.299805)
-SPARSITIES_SLICEGPT=(0.200196 0.288819 0.379151)
+declare -A TRUESLICE_SPARSITIES=(
+  ["meta-llama/Llama-3.1-8B"]="0.099854 0.199952 0.299805"
+  ["Qwen/Qwen3-8B"]="0.099854 0.199952 0.299805"
+)
+
+declare -A SLICEGPT_SPARSITIES=(
+  ["meta-llama/Llama-3.1-8B"]="0.209473 0.297364 0.387208"
+  ["Qwen/Qwen3-8B"]="0.209473 0.297364 0.387208"
+)
 
 CAL_SETS=(
   "wikitext2"
-  "alpaca"
+  # "alpaca"
 )
+
+CAL_SET_SIZE=128
+EVAL_SET_SIZE=128
 
 CAL_BATCH_SIZE=2
 EVAL_BATCH_SIZE=2
@@ -34,6 +45,26 @@ BASE_PATH="/mnt/ML_Storage/models_global_slicing"
 for MODEL_ENTRY in "${MODELS[@]}"; do
   # Split the string into two variables using the pipe character
   IFS="|" read -r MODEL_ID MODEL_NAME <<< "${MODEL_ENTRY}"
+
+  if [ "${RUN_TRUESLICE}" -eq 1 ]; then
+    IFS=' ' read -r -a SPARSITIES_TRUESLICE \
+      <<< "${TRUESLICE_SPARSITIES[$MODEL_ID]-}"
+
+    if [ "${#SPARSITIES_TRUESLICE[@]}" -eq 0 ]; then
+      echo "Error: missing TrueSlice sparsities for ${MODEL_ID}" >&2
+      exit 1
+    fi
+  fi
+
+  if [ "${RUN_SLICEGPT}" -eq 1 ]; then
+    IFS=' ' read -r -a SPARSITIES_SLICEGPT \
+      <<< "${SLICEGPT_SPARSITIES[$MODEL_ID]-}"
+
+    if [ "${#SPARSITIES_SLICEGPT[@]}" -eq 0 ]; then
+      echo "Error: missing SliceGPT sparsities for ${MODEL_ID}" >&2
+      exit 1
+    fi
+  fi
 
   if [ "${RUN_DENSE_PPL}" -eq 1 ]; then
     for CAL_SET in "${CAL_SETS[@]}"; do
@@ -46,14 +77,14 @@ for MODEL_ENTRY in "${MODELS[@]}"; do
         --model "${MODEL_ID}" \
         --ppl-only \
         --cal-dataset "${CAL_SET}" \
-        --cal-nsamples 128 \
+        --cal-nsamples "${CAL_SET_SIZE}" \
         --cal-batch-size "${CAL_BATCH_SIZE}" \
         --cal-max-seqlen 2048 \
         --seed 42 \
         --final-orientation random \
         --ppl-eval-seqlen 2048 \
         --ppl-eval-batch-size "${EVAL_BATCH_SIZE}" \
-        --ppl-eval-nsamples 128 \
+        --ppl-eval-nsamples "${EVAL_SET_SIZE}" \
         --dtype "${DTYPE}" \
         --distribute-model \
         --no-wandb
@@ -65,14 +96,14 @@ for MODEL_ENTRY in "${MODELS[@]}"; do
       for SPARSITY in "${SPARSITIES_TRUESLICE[@]}"; do
         echo "======================================================================"
         echo "Running TrueSlice for ${MODEL_NAME}"
-        echo "Sparsity: ${SPARSITY} | Calibration Dataset: ${CAL_SET}"
+        echo "Sparsity: ${SPARSITY} | Calibration Dataset: ${CAL_SET} (${CAL_SET_SIZE} samples)"
         echo "======================================================================"
 
         python experiments/run_trueslice.py \
           --model "${MODEL_ID}" \
-          --save-dir "${BASE_PATH}/${MODEL_NAME}_TrueSlice_${SPARSITY}_${CAL_SET}" \
+          --save-dir "${BASE_PATH}/${MODEL_NAME}_TrueSlice_${SPARSITY}_${CAL_SET}_${CAL_SET_SIZE}" \
           --cal-dataset "${CAL_SET}" \
-          --cal-nsamples 128 \
+          --cal-nsamples "${CAL_SET_SIZE}" \
           --cal-batch-size "${CAL_BATCH_SIZE}" \
           --cal-max-seqlen 2048 \
           --seed 42 \
@@ -81,7 +112,7 @@ for MODEL_ENTRY in "${MODELS[@]}"; do
           --final-orientation random \
           --ppl-eval-seqlen 2048 \
           --ppl-eval-batch-size "${EVAL_BATCH_SIZE}" \
-          --ppl-eval-nsamples 128 \
+          --ppl-eval-nsamples "${EVAL_SET_SIZE}" \
           --dtype "${DTYPE}" \
           --distribute-model \
           --no-wandb
@@ -94,14 +125,14 @@ for MODEL_ENTRY in "${MODELS[@]}"; do
       for SPARSITY in "${SPARSITIES_SLICEGPT[@]}"; do
         echo "======================================================================"
         echo "Running SliceGPT for ${MODEL_NAME}"
-        echo "Sparsity: ${SPARSITY} | Calibration Dataset: ${CAL_SET}"
+        echo "Sparsity: ${SPARSITY} | Calibration Dataset: ${CAL_SET} (${CAL_SET_SIZE} samples)"
         echo "======================================================================"
 
         python experiments/run_slicegpt.py \
           --model "${MODEL_ID}" \
-          --save-dir "${BASE_PATH}/${MODEL_NAME}_SliceGPT_${SPARSITY}_${CAL_SET}" \
+          --save-dir "${BASE_PATH}/${MODEL_NAME}_SliceGPT_${SPARSITY}_${CAL_SET}_${CAL_SET_SIZE}" \
           --cal-dataset "${CAL_SET}" \
-          --cal-nsamples 128 \
+          --cal-nsamples "${CAL_SET_SIZE}" \
           --cal-batch-size "${CAL_BATCH_SIZE}" \
           --cal-max-seqlen 2048 \
           --seed 42 \
@@ -110,7 +141,7 @@ for MODEL_ENTRY in "${MODELS[@]}"; do
           --final-orientation random \
           --ppl-eval-seqlen 2048 \
           --ppl-eval-batch-size "${EVAL_BATCH_SIZE}" \
-          --ppl-eval-nsamples 128 \
+          --ppl-eval-nsamples "${EVAL_SET_SIZE}" \
           --dtype "${DTYPE}" \
           --distribute-model \
           --no-wandb

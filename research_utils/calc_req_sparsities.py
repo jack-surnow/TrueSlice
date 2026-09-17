@@ -15,16 +15,16 @@ models = {
     #     "dense_bias": True, "fc1_bias": True, "fc2_bias": True,
     #     "lm_head_bias": True, "pos_embeddings": 2050, "norm_type": "layernorm",
     # },
-    "Phi-3-Mini (3.8B)": {
-        "vocab_size": 32064, "hidden_dim": 3072, "intermediate_dim": 8192,
-        "num_layers": 32, "num_q_heads": 32, "num_kv_heads": 32, 
-        "mlp_type": "gated",
-    },
-    "Phi-3-Small (7B)": {
-        "vocab_size": 100352, "hidden_dim": 4096, "intermediate_dim": 14336,
-        "num_layers": 32, "num_q_heads": 32, "num_kv_heads": 8, 
-        "mlp_type": "gated",
-    },
+    # "Phi-3-Mini (3.8B)": {
+    #     "vocab_size": 32064, "hidden_dim": 3072, "intermediate_dim": 8192,
+    #     "num_layers": 32, "num_q_heads": 32, "num_kv_heads": 32, 
+    #     "mlp_type": "gated",
+    # },
+    # "Phi-3-Small (7B)": {
+    #     "vocab_size": 100352, "hidden_dim": 4096, "intermediate_dim": 14336,
+    #     "num_layers": 32, "num_q_heads": 32, "num_kv_heads": 8, 
+    #     "mlp_type": "gated",
+    # },
     "Llama-3.2 (1B)": {
         "vocab_size": 128256, "hidden_dim": 2048, "intermediate_dim": 8192,
         "num_layers": 16, "num_q_heads": 32, "num_kv_heads": 8, "head_dim": 64,
@@ -38,6 +38,11 @@ models = {
     "Llama-3.1 (8B)": {
         "vocab_size": 128256, "hidden_dim": 4096, "intermediate_dim": 14336,
         "num_layers": 32, "num_q_heads": 32, "num_kv_heads": 8, 
+        "mlp_type": "gated",
+    },
+    "Llama-3.1 (70B)": {
+        "vocab_size": 128256, "hidden_dim": 8192, "intermediate_dim": 28672,
+        "num_layers": 80, "num_q_heads": 64, "num_kv_heads": 8, 
         "mlp_type": "gated",
     },
     "qwen3-1.7b": {
@@ -296,6 +301,7 @@ def find_optimal_sparsities(config, global_target_sparsity, dense_param_count, b
 
 
 sparsities = [0.1, 0.2, 0.3]
+# sparsities = [0.125, 0.25, 0.375]
 block_size = 1
 
 for name, cfg in models.items():
@@ -334,11 +340,11 @@ for name, cfg in models.items():
               f"{result['best_d_trueslice']:<6} | "
               f"{result['best_params_trueslice']:<14,} | "
               f"{result['required_sparsity_trueslice']:>9.6f} | "
-              f"{result['actual_trueslice_cut'] * 100:>9.4f}% | "
+              f"{result['actual_trueslice_cut'] * 100:>9.4f}\\% | "
               f"{result['best_d_slicegpt']:<6} | "
               f"{result['best_params_slicegpt']:<14,} | "
               f"{result['required_sparsity_slicegpt']:>9.6f} | "
-              f"{result['actual_slicegpt_cut'] * 100:>8.4f}%")
+              f"{result['actual_slicegpt_cut'] * 100:>8.4f}\\%")
 
     trueslice_str = " ".join(x.strip() for x in list_trueslice)
     slicegpt_str = " ".join(x.strip() for x in list_slicegpt)
