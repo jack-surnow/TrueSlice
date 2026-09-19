@@ -19,6 +19,7 @@ import torch
 from torch import FloatTensor, LongTensor, Tensor, matmul
 from torch.nn import Linear, Module
 from transformers import PretrainedConfig, PreTrainedTokenizerBase
+from transformers.cache_utils import Cache
 from transformers.models.phi3.modeling_phi3 import Phi3Config, Phi3DecoderLayer, Phi3ForCausalLM, Phi3RMSNorm
 
 from slicegpt.model_adapter import LayerAdapter, ModelAdapter
@@ -33,85 +34,43 @@ class CompressedPhi3DecoderLayer(Phi3DecoderLayer):
 
     def forward(
         self,
-        hidden_states: torch.Tensor,
-        attention_mask: Optional[torch.Tensor] = None,
-        position_ids: Optional[torch.LongTensor] = None,
-        past_key_value: Optional[Tuple[torch.Tensor]] = None,
-        output_attentions: Optional[bool] = False,
-        use_cache: Optional[bool] = False,
-        cache_position: torch.LongTensor | None = None,
-        position_embeddings: Tuple[torch.Tensor, torch.Tensor] | None = None,
+        hidden_states: Tensor,
+        attention_mask: Tensor | None = None,
+        position_ids: LongTensor | None = None,
+        past_key_values: Cache | None = None,
+        use_cache: bool | None = False,
+        cache_position: LongTensor | None = None,
+        position_embeddings: tuple[Tensor, Tensor] | None = None,
         **kwargs,
-    ) -> Tuple[Any]:
-        if "padding_mask" in kwargs:
-            warnings.warn(
-                "Passing `padding_mask` is deprecated and will be removed in v4.37. "
-                "Please make sure use `attention_mask` instead.`"
-            )
+    ) -> Tensor:
         """
-        Args:
-            hidden_states (`torch.FloatTensor`):
-                input to the layer of shape `(batch, seq_len, embed_dim)`
-            attention_mask (`torch.FloatTensor`, *optional*): attention mask of size
-                `(batch, 1, tgt_len, src_len)` where padding elements are indicated by very large negative values.
-            position_ids (`torch.LongTensor` of shape `({0})`, *optional*):
-                Indices of positions of each input sequence tokens in the position embeddings. Selected in the range
-                `[0, config.n_positions - 1]`. [What are position IDs?](../glossary#position-ids)
-            output_attentions (`bool`, *optional*):
-                Whether or not to return the attentions tensors of all attention layers. See `attentions` under
-                returned tensors for more detail.
-            use_cache (`bool`, *optional*):
-                If set to `True`, `past_key_values` key value states are returned and can be used to speed up decoding
-                (see `past_key_values`).
-            past_key_value (`Tuple(torch.FloatTensor)`, *optional*): cached past key and value projection states
         """
-
         residual = hidden_states
-
         hidden_states = self.input_layernorm(hidden_states)
 
-        # Self Attention
-        attn_outputs = self.self_attn(
+        hidden_states, _ = self.self_attn(
             hidden_states=hidden_states,
             attention_mask=attention_mask,
             position_ids=position_ids,
-            past_key_value=past_key_value,
-            output_attentions=output_attentions,
+            past_key_values=past_key_values,
             use_cache=use_cache,
             cache_position=cache_position,
             position_embeddings=position_embeddings,
             **kwargs,
         )
 
-        attn_output = attn_outputs[0]
-        self_attn_weights = attn_outputs[1] if len(attn_outputs) > 1 else None
-        present_key_value = attn_outputs[2] if len(attn_outputs) > 2 else None
-
         if self.attn_shortcut_Q is not None:
-            rotated_residual = matmul(residual, self.attn_shortcut_Q)
-            hidden_states = rotated_residual + self.resid_attn_dropout(attn_output)
-        else:
-            hidden_states = residual + self.resid_attn_dropout(attn_output)
+            residual = matmul(residual, self.attn_shortcut_Q)
+        hidden_states = residual + self.resid_attn_dropout(hidden_states)
 
         residual = hidden_states
         hidden_states = self.post_attention_layernorm(hidden_states)
         hidden_states = self.mlp(hidden_states)
 
         if self.mlp_shortcut_Q is not None:
-            rotated_residual = matmul(residual, self.mlp_shortcut_Q)
-            hidden_states = rotated_residual + self.resid_mlp_dropout(hidden_states)
-        else:
-            hidden_states = residual + self.resid_mlp_dropout(hidden_states)
-
-        outputs = (hidden_states,)
-
-        if output_attentions:
-            outputs += (self_attn_weights,)
-
-        if use_cache:
-            outputs += (present_key_value,)
-
-        return outputs
+            residual = matmul(residual, self.mlp_shortcut_Q)
+        hidden_states = residual + self.resid_mlp_dropout(hidden_states)
+        return hidden_states
 
 
 class Phi3LayerAdapter(LayerAdapter):

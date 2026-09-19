@@ -6,10 +6,11 @@
 # Copyright 2022 The Fairseq Authors and The HuggingFace Inc. team. All rights reserved.
 
 import torch
-from torch import FloatTensor, Tensor, matmul
+from torch import FloatTensor, LongTensor, Tensor, matmul
 from torch.nn import LayerNorm, Linear, Module
 from torch.nn.functional import dropout
 from transformers import PretrainedConfig
+from transformers.cache_utils import Cache
 from transformers.models.opt.modeling_opt import OPTConfig, OPTDecoderLayer, OPTForCausalLM
 
 from slicegpt.model_adapter import LayerAdapter, ModelAdapter
@@ -26,28 +27,17 @@ class CompressedOPTDecoderLayer(OPTDecoderLayer):
         self,
         hidden_states: Tensor,
         attention_mask: Tensor | None = None,
-        layer_head_mask: Tensor | None = None,
-        past_key_value: tuple[Tensor] | None = None,
+        past_key_values: Cache | None = None,
         output_attentions: bool | None = False,
         use_cache: bool | None = False,
-        position_ids: torch.LongTensor | None = None,
+        position_ids: LongTensor | None = None,
+        cache_position: LongTensor | None = None,
         **kwargs,
     ) -> tuple:
         """
-        Args:
-            hidden_states (`torch.FloatTensor`): input to the layer of shape `(batch, seq_len, embed_dim)`
-            attention_mask (`torch.FloatTensor`, *optional*): attention mask of size
-                `(batch, 1, tgt_len, src_len)` where padding elements are indicated by very large negative values.
-            layer_head_mask (`torch.FloatTensor`, *optional*): mask for attention heads in a given layer of size
-                `(encoder_attention_heads,)`.
-            output_attentions (`bool`, *optional*):
-                Whether to return the attentions tensors of all attention layers. See `attentions` under
-                returned tensors for more detail.
-            use_cache (`bool`, *optional*):
-                If set to `True`, `past_key_values` key value states are returned and can be used to speed up decoding
-                (see `past_key_values`).
-            past_key_value (`tuple(torch.FloatTensor)`, *optional*): cached past key and value projection states
         """
+        if not self.do_layer_norm_before:
+            raise NotImplementedError("Layer norm after attention is not implemented yet!")
 
         residual = hidden_states
 
@@ -56,24 +46,23 @@ class CompressedOPTDecoderLayer(OPTDecoderLayer):
             hidden_states = self.self_attn_layer_norm(hidden_states)
 
         # Self Attention
-        hidden_states, self_attn_weights, present_key_value = self.self_attn(
+        hidden_states, self_attn_weights = self.self_attn(
             hidden_states=hidden_states,
-            past_key_value=past_key_value,
+            past_key_values=past_key_values,
+            position_ids=position_ids,
             attention_mask=attention_mask,
-            layer_head_mask=layer_head_mask,
             output_attentions=output_attentions,
+            cache_position=cache_position,
+            **kwargs,
         )
-
         hidden_states = dropout(hidden_states, p=self.dropout, training=self.training)
         if self.attn_shortcut_Q is not None:
-            rotated_shortcut = matmul(residual, self.attn_shortcut_Q)
-            hidden_states = rotated_shortcut + hidden_states
-        else:
-            hidden_states = residual + hidden_states
+            residual = matmul(residual, self.attn_shortcut_Q)
+        hidden_states = residual + hidden_states
 
         # 350m applies layer norm AFTER attention
         if not self.do_layer_norm_before:
-            raise NotImplementedError("Layer norm after attention is not implemented yet!")
+            hidden_states = self.self_attn_layer_norm(hidden_states)
 
         # Fully Connected
         hidden_states_shape = list(hidden_states.shape)
@@ -90,13 +79,10 @@ class CompressedOPTDecoderLayer(OPTDecoderLayer):
         hidden_states = self.fc2(hidden_states)
         hidden_states = dropout(hidden_states, p=self.dropout, training=self.training)
 
-        hidden_states_shape[-1] = self.fc2.out_features  # to make sure the shape is correct
-
+        hidden_states_shape[-1] = self.fc2.out_features
         if self.mlp_shortcut_Q is not None:
-            rotated_shortcut = matmul(residual, self.mlp_shortcut_Q)
-            hidden_states = rotated_shortcut.view(hidden_states_shape) + hidden_states.view(hidden_states_shape)
-        else:
-            hidden_states = (residual + hidden_states).view(hidden_states_shape)
+            residual = matmul(residual, self.mlp_shortcut_Q)
+        hidden_states = (residual + hidden_states).view(hidden_states_shape)
 
         # 350m applies layer norm AFTER attention
         if not self.do_layer_norm_before:
@@ -106,9 +92,6 @@ class CompressedOPTDecoderLayer(OPTDecoderLayer):
 
         if output_attentions:
             outputs += (self_attn_weights,)
-
-        if use_cache:
-            outputs += (present_key_value,)
 
         return outputs
 

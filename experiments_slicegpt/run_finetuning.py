@@ -257,7 +257,7 @@ def finetuning_main(args: argparse.Namespace) -> None:
     if args.distribute_model:
         gpu_utils.distribute_model(model_adapter)
     else:
-        model_adapter.model.to(config.device)
+        model_adapter.model.to(device=config.device)
 
     # compute perplexity before finetuning
     dataset_ppl = gpu_utils.evaluate_ppl(model_adapter.model, model_adapter.model.config.pad_token_id, ppl_eval_loader)

@@ -162,7 +162,7 @@ def slicing_main(args: argparse.Namespace) -> None:
             # distribute model across available GPUs
             gpu_utils.distribute_model(model_adapter)
         else:
-            model.to(config.device)
+            model.to(device=config.device)
 
     dataset = data_utils.get_dataset(args.cal_dataset)
     train_dataset = dataset["train"]
@@ -199,7 +199,7 @@ def slicing_main(args: argparse.Namespace) -> None:
         dataset_ppl = gpu_utils.evaluate_ppl(model, model.config.pad_token_id, test_loader)
         logging.info(f'Original ppl: {dataset_ppl:.4f}')
         wandb.log({"original_ppl": dataset_ppl})
-        model.cpu()
+        model.to("cpu")
         utils.cleanup_memory()
 
     # replace modules with compressible equivalents
@@ -210,13 +210,13 @@ def slicing_main(args: argparse.Namespace) -> None:
 
     # don't run this on large and/or distributed models
     if args.eval_fused_model and not args.distribute_model:
-        model.to(config.device)
+        model.to(device=config.device)
 
         dataset_ppl = gpu_utils.evaluate_ppl(model, model.config.pad_token_id, test_loader)
         logging.info(f'Post-fusion: {dataset_ppl:.4f}')
         wandb.log({"post_fusion_ppl": dataset_ppl})
 
-        model.cpu()
+        model.to("cpu")
 
         # run GC and cleanup GPU memory
         utils.cleanup_memory()

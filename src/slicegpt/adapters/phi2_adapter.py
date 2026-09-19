@@ -12,6 +12,7 @@ import torch
 from torch import FloatTensor, LongTensor, Tensor, matmul
 from torch.nn import LayerNorm, Linear, Module
 from transformers import PretrainedConfig, PreTrainedTokenizerBase
+from transformers.cache_utils import Cache
 from transformers.models.phi.modeling_phi import PhiConfig, PhiDecoderLayer, PhiForCausalLM
 
 from slicegpt.model_adapter import LayerAdapter, ModelAdapter
@@ -29,69 +30,43 @@ class CompressedPhiDecoderLayer(PhiDecoderLayer):
         hidden_states: Tensor,
         attention_mask: Tensor | None = None,
         position_ids: LongTensor | None = None,
+        past_key_values: Cache | None = None,
         output_attentions: bool | None = False,
         use_cache: bool | None = False,
-        past_key_value: tuple[Tensor] | None = None,
-        cache_position: torch.LongTensor | None = None,
-        position_embeddings: Tuple[torch.Tensor, torch.Tensor] | None = None,
+        cache_position: LongTensor | None = None,
+        position_embeddings: tuple[Tensor, Tensor] | None = None,
         **kwargs,
     ) -> tuple:
         """
-        Args:
-            hidden_states (`torch.FloatTensor`):
-                input to the layer of shape `(batch, seq_len, embed_dim)`
-            attention_mask (`torch.FloatTensor`, *optional*): attention mask of size
-                `(batch, 1, tgt_len, src_len)` where padding elements are indicated by very large negative values.
-            position_ids (`torch.LongTensor` of shape `({0})`, *optional*):
-                Indices of positions of each input sequence tokens in the position embeddings. Selected in the range
-                `[0, config.n_positions - 1]`. [What are position IDs?](../glossary#position-ids)
-            output_attentions (`bool`, *optional*):
-                Whether to return the attentions tensors of all attention layers. See `attentions` under
-                returned tensors for more detail.
-            use_cache (`bool`, *optional*):
-                If set to `True`, `past_key_values` key value states are returned and can be used to speed up decoding
-                (see `past_key_values`).
-            past_key_value (`Tuple(torch.FloatTensor)`, *optional*): cached past key and value projection states
         """
-
         residual = hidden_states
 
         hidden_states = self.input_layernorm(hidden_states)
 
         # Self Attention
-        attn_outputs = self.self_attn(
+        attn_outputs, self_attn_weights = self.self_attn(
             hidden_states=hidden_states,
             attention_mask=attention_mask,
             position_ids=position_ids,
-            past_key_value=past_key_value,
+            past_key_values=past_key_values,
             output_attentions=output_attentions,
             use_cache=use_cache,
             cache_position=cache_position,
             position_embeddings=position_embeddings,
             **kwargs,
         )
-        
-        attn_output = attn_outputs[0]
-        self_attn_weights = attn_outputs[1] if len(attn_outputs) > 1 else None
-        present_key_value = attn_outputs[2] if len(attn_outputs) > 2 else None
-
-        attn_output = self.resid_dropout(attn_output)
+        attn_outputs = self.resid_dropout(attn_outputs)
 
         feed_forward_hidden_states = self.resid_dropout(self.mlp(hidden_states))
 
         if self.attn_shortcut_Q is not None:
-            rotated_residual = matmul(residual, self.attn_shortcut_Q)
-            hidden_states = attn_output + feed_forward_hidden_states + rotated_residual
-        else:
-            hidden_states = attn_output + feed_forward_hidden_states + residual
+            residual = matmul(residual, self.attn_shortcut_Q)
+        hidden_states = attn_outputs + feed_forward_hidden_states + residual
 
         outputs = (hidden_states,)
 
         if output_attentions:
             outputs += (self_attn_weights,)
-
-        if use_cache:
-            outputs += (present_key_value,)
 
         return outputs
 

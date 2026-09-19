@@ -121,7 +121,7 @@ def benchmarking_main(args: argparse.Namespace) -> None:
         # distribute model across available GPUs
         gpu_utils.distribute_model(model_adapter)
     else:
-        model_adapter.model.to(config.device)
+        model_adapter.model.to(device=config.device)
 
     dataset = data_utils.get_dataset(args.eval_dataset)
     train_loader = data_utils.prepare_dataloader(

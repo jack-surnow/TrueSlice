@@ -122,8 +122,8 @@ def benchmark(model_adapter: ModelAdapter, input_batch: torch.Tensor) -> dict:
         time_measurements = []
 
         for i in tqdm(range(input_seq_len), desc="Benchmarking"):
-            input_ids_i = input_ids[:, i].reshape((batch_size, 1)).to(config.device)
-            attention_mask_i = attention_mask[:, : (i + 1)].to(config.device)
+            input_ids_i = input_ids[:, i].reshape((batch_size, 1)).to(device=config.device)
+            attention_mask_i = attention_mask[:, : (i + 1)].to(device=config.device)
 
             sync_gpus()
             start_time = time.time()

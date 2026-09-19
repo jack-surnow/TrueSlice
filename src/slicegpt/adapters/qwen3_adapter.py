@@ -10,6 +10,7 @@ import torch
 from torch import FloatTensor, LongTensor, Tensor, matmul
 from torch.nn import Linear, Module
 from transformers import PretrainedConfig, PreTrainedTokenizerBase
+from transformers.cache_utils import Cache
 from transformers.models.qwen3.modeling_qwen3 import Qwen3Config, Qwen3DecoderLayer, Qwen3ForCausalLM, Qwen3RMSNorm
 
 from slicegpt.model_adapter import LayerAdapter, ModelAdapter
@@ -27,48 +28,32 @@ class CompressedQwen3DecoderLayer(Qwen3DecoderLayer):
         hidden_states: Tensor,
         attention_mask: Tensor | None = None,
         position_ids: LongTensor | None = None,
-        past_key_value: tuple[Tensor] | None = None,
-        output_attentions: bool | None = False,
+        past_key_values: Cache | None = None,
         use_cache: bool | None = False,
+        cache_position: LongTensor | None = None,
+        position_embeddings: tuple[Tensor, Tensor] | None = None,
         **kwargs,
-    ) -> tuple:
+    ) -> Tensor:
         """
-        Args:
-            hidden_states (`torch.FloatTensor`): input to the layer of shape `(batch, seq_len, embed_dim)`
-            attention_mask (`torch.FloatTensor`, *optional*): attention mask of size
-                `(batch, 1, tgt_len, src_len)` where padding elements are indicated by very large negative values.
-            output_attentions (`bool`, *optional*):
-                Whether to return the attentions tensors of all attention layers. See `attentions` under
-                returned tensors for more detail.
-            use_cache (`bool`, *optional*):
-                If set to `True`, `past_key_values` key value states are returned and can be used to speed up decoding
-                (see `past_key_values`).
-            past_key_value (`tuple(torch.FloatTensor)`, *optional*): cached past key and value projection states
         """
-
         residual = hidden_states
-
         hidden_states = self.input_layernorm(hidden_states)
 
-        attn_outputs = self.self_attn(
+        # Self Attention
+        hidden_states, _ = self.self_attn(
             hidden_states=hidden_states,
             attention_mask=attention_mask,
             position_ids=position_ids,
-            past_key_value=past_key_value,
-            output_attentions=output_attentions,
+            past_key_values=past_key_values,
             use_cache=use_cache,
+            cache_position=cache_position,
+            position_embeddings=position_embeddings,
             **kwargs,
         )
-        
-        hidden_states = attn_outputs[0]
-        self_attn_weights = attn_outputs[1] if len(attn_outputs) > 1 else None
-        present_key_value = attn_outputs[2] if len(attn_outputs) > 2 else None
 
         if self.attn_shortcut_Q is not None:
-            rotated_residual = matmul(residual, self.attn_shortcut_Q)
-            hidden_states = rotated_residual + hidden_states
-        else:
-            hidden_states = residual + hidden_states
+            residual = matmul(residual, self.attn_shortcut_Q)
+        hidden_states = residual + hidden_states
 
         # Fully Connected
         residual = hidden_states
@@ -76,20 +61,8 @@ class CompressedQwen3DecoderLayer(Qwen3DecoderLayer):
         hidden_states = self.mlp(hidden_states)
 
         if self.mlp_shortcut_Q is not None:
-            rotated_residual = matmul(residual, self.mlp_shortcut_Q)
-            hidden_states = rotated_residual + hidden_states
-        else:
-            hidden_states = residual + hidden_states
-
-        outputs = (hidden_states,)
-
-        if output_attentions:
-            outputs += (self_attn_weights,)
-
-        if use_cache:
-            outputs += (present_key_value,)
-
-        return outputs
+            residual = matmul(residual, self.mlp_shortcut_Q)
+        return residual + hidden_states
 
 
 class Qwen3LayerAdapter(LayerAdapter):

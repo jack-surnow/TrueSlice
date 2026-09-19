@@ -9,9 +9,9 @@ import math
 import torch
 import wandb
 
-from slicegpt import data_utils, gpu_utils, hf_utils, layernorm_fusion, global_rotate, utils
-from slicegpt.config import config
-from slicegpt.slicing_scheduler import ConstSlicingScheduler
+from trueslice import data_utils, gpu_utils, hf_utils, layernorm_fusion, rotate, utils
+from trueslice.config import config
+from trueslice.slicing_scheduler import ConstSlicingScheduler
 
 
 def slicing_arg_parser(interactive: bool = True) -> argparse.Namespace:
@@ -81,8 +81,6 @@ def slicing_arg_parser(interactive: bool = True) -> argparse.Namespace:
         help="Use accelerate to put the model on multiple GPUs for evaluation. It is recommended to use it for models with 30B parameters and above.",
     )
 
-    parser.add_argument("--save-dir", type=str, default=None, help="Path to save the model.")
-
     parser.add_argument('--hf-token', type=str, default=os.getenv('HF_TOKEN', None))
 
     parser.add_argument('--wandb-project', type=str, default="slicegpt", help="wandb project name.")
@@ -120,7 +118,7 @@ def process_slicing_args(args):
 
 
 def slicing_main(args: argparse.Namespace) -> None:
-    logging.info("Running SliceGPT experiment.")
+    logging.info("Running evaluation.")
     logging.info(f"PyTorch device: {config.device}")
     logging.info(f"Number of available cuda devices: {torch.cuda.device_count()}")
 
@@ -138,25 +136,8 @@ def slicing_main(args: argparse.Namespace) -> None:
 
     model = model_adapter.model
 
-    def reset_model_device() -> None:
-        if args.distribute_model:
-            # distribute model across available GPUs
-            gpu_utils.distribute_model(model_adapter)
-        else:
-            model.to(config.device)
-
     dataset = data_utils.get_dataset(args.cal_dataset)
-    train_dataset = dataset["train"]
     test_dataset = dataset["test"] if "test" in dataset else dataset["validation"]
-    train_loader = data_utils.prepare_dataloader(
-        dataset=train_dataset,
-        tokenizer=tokenizer,
-        max_seqlen=args.cal_max_seqlen,
-        batch_size=args.cal_batch_size,
-        nsamples=args.cal_nsamples,
-        varied_seqlen=args.varied_seqlen,
-        seed=args.seed,
-    )
     test_loader = data_utils.prepare_test_dataloader(
         dataset=test_dataset, tokenizer=tokenizer, batch_size=args.ppl_eval_batch_size
     )
@@ -164,62 +145,10 @@ def slicing_main(args: argparse.Namespace) -> None:
     dense_param_count = sum(int(p.nelement()) for p in model.parameters())
     logging.info(f'Dense model parameters: {dense_param_count:,d}')
 
-    # evaluate perplexity and exit if sliced model is loaded or if ppl_only is set
-    if args.ppl_only:
-        reset_model_device()
-        dataset_ppl = gpu_utils.evaluate_ppl(model, model.config.pad_token_id, test_loader)
-        logging.info(f'Loaded model perplexity: {dataset_ppl}')
-        wandb.log({"original_ppl": dataset_ppl})
-        return
-
-    # original ppl
-    if args.eval_baseline:
-        reset_model_device()
-        dataset_ppl = gpu_utils.evaluate_ppl(model, model.config.pad_token_id, test_loader)
-        logging.info(f'Original ppl: {dataset_ppl:.4f}')
-        wandb.log({"original_ppl": dataset_ppl})
-        model.cpu()
-        utils.cleanup_memory()
-
-    # replace modules with compressible equivalents
-    layernorm_fusion.global_replace_layers(model_adapter)
-
-    # fuse layernorms and add rotations to skip connections
-    layernorm_fusion.fuse_modules(model_adapter)
-
-
-    fused_param_count = sum(int(p.nelement()) for p in model.parameters())
-    logging.info(f'Fused model parameters: {fused_param_count:,d}')
-
-    # compute new embedding dimension given the desired sparsity level
-    # new_embedding_dimension = int((1 - args.sparsity) * model_adapter.hidden_size)
-    # round (down) to the nearest multiple of round_interval
-    # new_embedding_dimension -= new_embedding_dimension % args.round_interval
-
-    new_embedding_dimension = math.ceil(model_adapter.hidden_size * (1 - args.sparsity) / args.round_interval) * args.round_interval
-
-    logging.info(
-        f"New embedding dimension: {new_embedding_dimension} (sparsity {100*(1 - new_embedding_dimension / model_adapter.hidden_size):.4f} %)"
-    )
-
-    scheduler = ConstSlicingScheduler(new_embedding_dimension)
-    global_rotate.global_rotate_and_slice(model_adapter, train_loader, scheduler, final_orientation=args.final_orientation)
-
-    layernorm_fusion.global_restore_norms(model_adapter, new_embedding_dimension)
-
-    if args.save_dir:
-        hf_utils.global_save_model(model_adapter, model, args)
-
-    sliced_param_count = sum(int(p.nelement()) for p in model.parameters())
-    sliced_fraction = 1.0 - sliced_param_count / dense_param_count
-    logging.info(f'Sliced model parameters: {sliced_param_count:,d} (sliced fraction {sliced_fraction:.4f})')
-
-    utils.cleanup_memory()
-
-    reset_model_device()
+    # evaluate perplexity
     dataset_ppl = gpu_utils.evaluate_ppl(model, model.config.pad_token_id, test_loader)
-    logging.info(f'After rotating and slicing {dataset_ppl:.4f}')
-    wandb.log({"sliced_ppl": dataset_ppl})
+    logging.info(f'Loaded model perplexity: {dataset_ppl}')
+    wandb.log({"original_ppl": dataset_ppl})
 
 
 if __name__ == "__main__":

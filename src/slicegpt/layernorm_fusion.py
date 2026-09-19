@@ -33,26 +33,6 @@ def replace_layers(model_adapter: ModelAdapter, verbose: bool = True) -> None:
         logging.info("Replacing layers done")
 
 
-def global_replace_layers(model_adapter: ModelAdapter, verbose: bool = True) -> None:
-    """Replace layers with compressed versions.
-
-    This adds a 'shortcut operation' to each block.
-    This function should be called before fusing the modules!
-    """
-    if verbose:
-        logging.info("Replacing layers")
-
-    replace_modules(
-        model_adapter.model,
-        model_adapter.original_layer_type,
-        model_adapter.global_convert_layer_to_compressed_and_register_buffers,
-        replace_layers=True,
-    )
-
-    if verbose:
-        logging.info("Replacing layers done")
-
-
 AnyModule = TypeVar("AnyModule", bound=Module)
 
 
@@ -180,41 +160,3 @@ def fuse_ln_linear(layernorm: Module, linear_layers: Iterable[Linear]) -> None:
                 linear.bias = Parameter(torch.zeros(linear.out_features, dtype=torch.float64))
             linear.bias.data = linear.bias.data.double() + torch.matmul(W_, layernorm.bias.double())
             linear.bias.data = linear.bias.data.to(linear_dtype)
-
-
-def global_restore_norms(model_adapter: ModelAdapter, d_new) -> None:
-    logging.info("Restoring original norm layers with identity parameters")
-    
-    model_param = next(iter(model_adapter.model.parameters()))
-    target_device = model_param.device
-    target_dtype = model_param.dtype
-
-    config = model_adapter.model.config
-    eps = getattr(config, "rms_norm_eps", 
-          getattr(config, "layer_norm_eps", 
-          getattr(config, "layer_norm_epsilon", 1e-5)))
-
-    d_original = model_adapter.hidden_size
-    standard_scale = math.sqrt(d_original / d_new)
-
-    def create_norm(dim: int,scale_factor: float) -> nn.Module:
-        norm_layer = model_adapter.original_layer_norm_type(dim, eps=eps)
-        norm_layer = norm_layer.to(device=target_device, dtype=target_dtype)
-
-        if hasattr(norm_layer, 'weight') and norm_layer.weight is not None:
-            nn.init.constant_(norm_layer.weight, scale_factor)
-
-        if hasattr(norm_layer, 'bias') and norm_layer.bias is not None:
-            nn.init.zeros_(norm_layer.bias)
-
-        return norm_layer
-
-    for layer_adapter in model_adapter.get_layers():
-        layer_adapter.set_first_layernorm(create_norm(d_new, standard_scale)) 
-
-        if not model_adapter.parallel_blocks:
-            layer_adapter.set_second_layernorm(create_norm(d_new, standard_scale))
-
-    model_adapter.set_pre_head_layernorm(create_norm(d_new, standard_scale))
-
-    logging.info("Restoration of original norm layers complete")

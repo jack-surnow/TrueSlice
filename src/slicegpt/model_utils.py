@@ -26,11 +26,14 @@ def get_layer0_inputs(model_adapter: ModelAdapter, batch: Tensor) -> tuple[Tenso
     """
     # Move embeddings to device.
     for W in model_adapter.get_embeddings():
-        W.weight = torch.nn.Parameter(W.weight.to(config.device))
+        W.weight = torch.nn.Parameter(W.weight.to(device=config.device))
 
     class Catcher(torch.nn.Module):
-        def __init__(self):
+        def __init__(self, layer):
             super().__init__()
+
+            if hasattr(layer, "attention_type"):
+                self.attention_type = layer.attention_type
 
         def forward(self, *args, **kwargs):
             self.saved_args = args
@@ -38,7 +41,7 @@ def get_layer0_inputs(model_adapter: ModelAdapter, batch: Tensor) -> tuple[Tenso
             raise ValueError
 
     layer0_adapter = model_adapter.get_layers()[0]
-    layer0_catcher = Catcher()
+    layer0_catcher = Catcher(layer0_adapter.layer)
     model_adapter.set_raw_layer_at(0, layer0_catcher)
 
     try:
@@ -60,7 +63,7 @@ def get_layer0_inputs(model_adapter: ModelAdapter, batch: Tensor) -> tuple[Tenso
 
     # Move embeddings back to cpu, and clear GPU cache.
     for W in model_adapter.get_embeddings():
-        W.weight = torch.nn.Parameter(W.weight.to('cpu'))
+        W.weight = torch.nn.Parameter(W.weight.to("cpu"))
 
     # Run GC and cleanup GPU memory
     utils.cleanup_memory()
@@ -78,11 +81,11 @@ def get_signals(
     mlp_ln_inputs = []
     outputs = []
 
-    layer_adapter.layer.to(config.device)
+    layer_adapter.layer.to(device=config.device)
 
     def hook_fn(_, args: tuple, _output: Any) -> None:
         inp = args[0]  # Position in RMSN.forward args
-        mlp_ln_inputs.append(inp.detach().cpu())
+        mlp_ln_inputs.append(inp.detach().to("cpu"))
 
     second_layernorm = layer_adapter.get_second_layernorm()
     assert isinstance(second_layernorm, RMSN)
@@ -94,7 +97,7 @@ def get_signals(
         out = layer_adapter.layer(*layer_args_batch, **layer_kwargs_batch)
         if isinstance(out, tuple):
             out = out[layer_adapter.hidden_states_output_position]
-        out = out.cpu()
+        out = out.to("cpu")
         outputs.append(out)
 
         if mlp_ln_inputs[i].ndim == 2:
