@@ -155,6 +155,7 @@ def load_sliced_model(
     lora_config: Any = None,
     sparsity: float | None = None,
     round_interval: int | None = 1,
+    dtype: torch.dtype | None = None,
 ) -> tuple[ModelAdapter, PreTrainedTokenizerBase]:
     """
     Load the sliced model and the tokenizer from the given path. If lora_config: peft.LoraConfig is supplied
@@ -172,18 +173,20 @@ def load_sliced_model(
         model_path=sliced_model_path,
         uninitialized=True,
         token=token,
+        dtype=dtype,
     )
     replace_layers(model_adapter)
     fuse_modules(model_adapter)
 
     hidden_size = model_adapter.hidden_size
     for layer_adapter in model_adapter.get_layers():
+        layer_dtype = next(layer_adapter.layer.parameters()).dtype
         if not model_adapter.parallel_blocks:
             layer_adapter.layer.mlp_shortcut_Q = torch.nn.Parameter(
-                torch.zeros(hidden_size, hidden_size).to(dtype=torch.float16)
+                torch.zeros(hidden_size, hidden_size, dtype=layer_dtype)
             )
         layer_adapter.layer.attn_shortcut_Q = torch.nn.Parameter(
-            torch.zeros(hidden_size, hidden_size).to(dtype=torch.float16)
+            torch.zeros(hidden_size, hidden_size, dtype=layer_dtype)
         )
 
     config_path = pathlib.Path(sliced_model_path) / my_sliced_model_config

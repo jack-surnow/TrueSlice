@@ -131,8 +131,8 @@ def slicing_main(args: argparse.Namespace) -> None:
         wandb.init(project=args.wandb_project, mode='disabled')
 
     memory_allocation = {
-        0: "9GiB",    # Leave 2GB headroom on GPU 0
-        1: "9GiB",    # Leave 2GB headroom on GPU 1
+        0: "10GiB",    # Leave 2GB headroom on GPU 0
+        1: "10GiB",    # Leave 2GB headroom on GPU 1
         "cpu": "64GiB" # Allocate up to 64GB of system RAM for offloaded layers
     }
 

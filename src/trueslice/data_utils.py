@@ -114,6 +114,7 @@ def prepare_dataloader(
     nsamples: int = 128,
     varied_seqlen: bool = False,
     seed=42,
+    exact_seqlen: bool = False,
 ) -> DataLoader[dict[str, torch.Tensor]]:
     """
     Get a DataLoader from a dataset.
@@ -126,10 +127,14 @@ def prepare_dataloader(
         nsamples: The number of samples to produce.
         varied_seqlen: If False, concatenate multiple examples from the dataset into one example until max_seqlen is reached.
         seed: The seed for sampling the dataset.
+        exact_seqlen: Preserve sampled token IDs without a text round trip (fixed-length benchmarks).
 
     Returns:
         A DataLoader.
     """
+    if exact_seqlen and (varied_seqlen or not nsamples):
+        raise ValueError("exact_seqlen requires fixed-length sampling and a positive nsamples")
+
     logging.info(f"Preparing dataloader")
 
     if not varied_seqlen and not nsamples:
@@ -162,11 +167,18 @@ def prepare_dataloader(
 
             if len(tokens) >= max_seqlen:
                 tokens = tokens[:max_seqlen]  # truncate to max_seqlen
-                new_data_list.append(tokenizer.convert_tokens_to_string(tokens))
+                if exact_seqlen:
+                    new_data_list.append(tokenizer.convert_tokens_to_ids(tokens))
+                else:
+                    new_data_list.append(tokenizer.convert_tokens_to_string(tokens))
 
         ds = datasets.Dataset.from_dict({data_name: new_data_list})
 
     def tokenize(data_batch):
+        if exact_seqlen:
+            input_ids = torch.tensor(data_batch[data_name], dtype=torch.long)
+            return {"input_ids": input_ids, "attention_mask": torch.ones_like(input_ids), "labels": input_ids.clone()}
+
         # tokenize then pad each batch according to the longest sequence in the batch
         batch = tokenizer(
             data_batch[data_name],

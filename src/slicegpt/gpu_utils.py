@@ -1,6 +1,7 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT license.
 import logging
+import inspect
 import time
 
 import numpy as np
@@ -97,47 +98,180 @@ def sync_gpus() -> None:
         torch.cuda.synchronize(device=i)
 
 
-def benchmark(model_adapter: ModelAdapter, input_batch: torch.Tensor) -> dict:
-    """Benchmark the model's latency and throughput on the given input batch."""
-    model_adapter.use_cache = True
+@torch.no_grad()
+def benchmark(model_adapter: ModelAdapter, input_batch: dict[str, torch.Tensor], warmup_steps: int = 5, prompt_tokens: int = 0) -> dict:
+    """Time cached, single-token forwards over a supplied sequence, starting with an empty cache.
 
-    cache = {"past": None}
+    Inputs are teacher-forced (no sampling). Warmup uses a separate cache and is
+    excluded, as are input transfers. Latency is seconds per batch decode step;
+    throughput counts all decode tokens in the batch. With prompt_tokens > 0,
+    separately time prompt prefill and greedy first-token selection (on device).
+    """
+    input_ids = input_batch["input_ids"]
+    attention_mask = input_batch["attention_mask"]
+    if input_ids.ndim != 2 or attention_mask.shape != input_ids.shape or input_ids.numel() == 0:
+        raise ValueError("Expected nonempty input_ids and attention_mask with matching [batch, sequence] shapes")
+    if not 0 <= prompt_tokens < input_ids.shape[1]:
+        raise ValueError("prompt_tokens must leave at least one decode token")
+    if warmup_steps < 0:
+        raise ValueError("warmup_steps must be nonnegative")
+    if not bool(attention_mask.all()):
+        raise ValueError("Benchmark inputs must be unpadded so every timed step represents a real token")
 
-    def clear_past_cache(layer_idx):
-        def tmp(*_):
-            if cache["past"]:
-                cache["past"][layer_idx] = None
+    input_ids = input_ids.to(device=config.device)
+    attention_mask = attention_mask.to(device=config.device)
+    batch_size, input_seq_len = input_ids.shape
+    decode_tokens = input_seq_len - prompt_tokens
+    model = model_adapter.model
+    prefill_kwargs = {"logits_to_keep": 1} if "logits_to_keep" in inspect.signature(model.forward).parameters else {}
+    was_training = model.training
+    original_use_cache = model_adapter.use_cache
+    try:
+        model.eval()
+        model_adapter.use_cache = True
 
-        return tmp
+        def forward_token(index, past):
+            return model(
+                input_ids[:, index:index + 1],
+                past_key_values=past,
+                attention_mask=attention_mask[:, :index + 1],
+                use_cache=True,
+            )
 
-    layers = model_adapter.get_layers()
-    for idx, layer_adapter in enumerate(layers):
-        # Clear past cache after each layer gets called to get accurate timing of each forward pass.
-        layer_adapter.layer.register_forward_hook(clear_past_cache(idx))
+        def prefill():
+            output = model(
+                input_ids[:, :prompt_tokens], attention_mask=attention_mask[:, :prompt_tokens],
+                past_key_values=None, use_cache=True, **prefill_kwargs,
+            )
+            first_token = output.logits[:, -1, :].argmax(dim=-1)
+            if output.past_key_values is None:
+                raise RuntimeError("The model did not return a cache with use_cache=True")
+            return output.past_key_values, first_token
 
-    with torch.no_grad():
-        input_ids = input_batch["input_ids"]
-        batch_size, input_seq_len = input_ids.shape[:2]
-        attention_mask = input_batch["attention_mask"]
+        past = None
+        for i in range(warmup_steps):
+            offset = i % decode_tokens
+            if offset == 0:
+                past = prefill()[0] if prompt_tokens else None
+            output = forward_token(prompt_tokens + offset, past)
+            past = output.past_key_values
+            del output
+        sync_gpus()
+        past = None
+        ttft_seconds = None
+        if prompt_tokens:
+            sync_gpus()
+            start_time = time.perf_counter()
+            past, first_token = prefill()
+            sync_gpus()
+            ttft_seconds = time.perf_counter() - start_time
+            del first_token
         time_measurements = []
 
-        for i in tqdm(range(input_seq_len), desc="Benchmarking"):
-            input_ids_i = input_ids[:, i].reshape((batch_size, 1)).to(device=config.device)
-            attention_mask_i = attention_mask[:, : (i + 1)].to(device=config.device)
-
+        for i in tqdm(range(prompt_tokens, input_seq_len), desc="Benchmarking"):
             sync_gpus()
-            start_time = time.time()
-            output = model_adapter.model(input_ids_i, past_key_values=cache["past"], attention_mask=attention_mask_i)
+            start_time = time.perf_counter()
+            output = forward_token(i, past)
             sync_gpus()
-            time_measurements.append(time.time() - start_time)
-
-            cache["past"] = list(output.past_key_values)
+            time_measurements.append(time.perf_counter() - start_time)
+            # Preserve the native Cache object; never convert it to a list or
+            # clear individual layers, which destroys the decoding context.
+            past = output.past_key_values
+            if past is None:
+                raise RuntimeError("The model did not return a cache with use_cache=True")
             del output
 
-            input_ids_i, attention_mask_i = input_ids_i.to("cpu"), attention_mask_i.to("cpu")
+        median_time = float(np.median(time_measurements))
+        return {
+            "median_time": median_time,
+            "latency": median_time,
+            "throughput": batch_size / median_time,
+            "batch_size": batch_size,
+            "ntokens": decode_tokens,
+            "prompt_tokens": prompt_tokens,
+            "ttft_seconds": ttft_seconds,
+            "step_times_seconds": time_measurements,
+            "total_time_seconds": float(sum(time_measurements)),
+        }
+    finally:
+        model_adapter.use_cache = original_use_cache
+        model.train(was_training)
 
-        median_time = np.median(time_measurements)
-        throughput = batch_size / median_time
 
-        results = {"median_time": median_time, "latency": 1 / throughput, "throughput": throughput}
-        return results
+def benchmark_batches(
+    model_adapter: ModelAdapter,
+    batches: list[dict[str, torch.Tensor]],
+    repetitions: int = 5,
+    warmup_steps: int = 5,
+    prompt_tokens: int = 0,
+) -> dict:
+    """Repeat identical, full batches; summarize variability between complete runs.
+
+    Each call to benchmark starts a fresh cache and performs untimed warmup.
+    All input preparation, transfers, and warmup are excluded from measured time.
+    """
+    if repetitions <= 0 or warmup_steps < 0 or not batches:
+        raise ValueError("Provide batches, positive repetitions, and nonnegative warmup_steps")
+    shape = batches[0]["input_ids"].shape
+    if len(shape) != 2 or min(shape) <= 0:
+        raise ValueError("Benchmark batches must be nonempty [batch, sequence] tensors")
+    for batch in batches:
+        if batch["input_ids"].shape != shape or batch["attention_mask"].shape != shape:
+            raise ValueError("All benchmark batches must have the same full shape")
+        if not bool(batch["attention_mask"].all()):
+            raise ValueError("Benchmark batches must not contain padding")
+    if not 0 <= prompt_tokens < shape[1]:
+        raise ValueError("prompt_tokens must leave at least one decode token")
+    batch_size, sequence_length = shape
+    ntokens = sequence_length - prompt_tokens
+    steps_per_run = len(batches) * ntokens
+    tokens_per_run = steps_per_run * batch_size
+    runs = []
+    for repetition in range(repetitions):
+        logging.info(f"Benchmark repetition {repetition + 1}/{repetitions}: {len(batches)} batches")
+        batch_results = []
+        for batch in batches:
+            batch_results.append(benchmark(model_adapter, batch, warmup_steps=warmup_steps, prompt_tokens=prompt_tokens))
+        times = [duration for result in batch_results for duration in result["step_times_seconds"]]
+        total_seconds = float(sum(times))
+        runs.append({
+            "repetition": repetition + 1,
+            "total_time_seconds": total_seconds,
+            "total_tokens": tokens_per_run,
+            "mean_step_latency_seconds": total_seconds / steps_per_run,
+            "median_step_latency_seconds": float(np.median(times)),
+            "throughput_tokens_per_second": tokens_per_run / total_seconds,
+            "batches": batch_results,
+        })
+        if prompt_tokens:
+            runs[-1]["ttft_seconds"] = float(np.mean([result["ttft_seconds"] for result in batch_results]))
+
+    def stats(key):
+        values = [run[key] for run in runs]
+        return {
+            "mean": float(np.mean(values)),
+            "std": float(np.std(values, ddof=1)) if repetitions > 1 else None,
+            "median": float(np.median(values)),
+            "min": float(min(values)),
+            "max": float(max(values)),
+        }
+
+    results = {
+        "batch_size": batch_size,
+        "prompt_tokens": prompt_tokens,
+        "nsamples": batch_size * len(batches),
+        "ntokens": ntokens,
+        "batches_per_repetition": len(batches),
+        "repetitions": repetitions,
+        "warmup_steps_per_batch": warmup_steps,
+        "tokens_per_repetition": tokens_per_run,
+        "total_measured_tokens": tokens_per_run * repetitions,
+        "throughput_tokens_per_second": stats("throughput_tokens_per_second"),
+        "mean_step_latency_seconds": stats("mean_step_latency_seconds"),
+        "total_time_seconds": stats("total_time_seconds"),
+        "runs": runs,
+    }
+
+    if prompt_tokens:
+        results["ttft_seconds"] = stats("ttft_seconds")
+    return results

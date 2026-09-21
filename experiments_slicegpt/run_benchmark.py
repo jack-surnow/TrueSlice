@@ -3,6 +3,9 @@
 
 import argparse
 import logging
+import hashlib
+import json
+import pathlib
 import os
 
 import torch
@@ -34,7 +37,7 @@ def benchmarking_arg_parser(interactive: bool = True) -> argparse.Namespace:
         default=None,
     )
 
-    parser.add_argument("--dtype", type=str, help="Data type to use.", choices=["fp32", "fp16"], default="fp16")
+    parser.add_argument("--dtype", type=str, help="Data type to use.", choices=["fp32", "fp16", "bf16", "auto"], default="fp16")
     parser.add_argument(
         "--eval-dataset",
         type=str,
@@ -45,10 +48,16 @@ def benchmarking_arg_parser(interactive: bool = True) -> argparse.Namespace:
     parser.add_argument(
         "--ntokens",
         type=int,
-        help="Number of tokens to benchmark over.",
+        help="Number of cached single-token forward steps per sequence (not dataset samples).",
         default=128,
     )
-    parser.add_argument("--batch-size", type=int, default=1, help="Batch size for loading the calibration data.")
+    parser.add_argument("--prompt-tokens", type=int, default=128, help="Prompt length for model-only TTFT; 0 disables prefill and preserves the legacy benchmark.")
+    parser.add_argument("--require-gpu-resident-model", action="store_true", help="Reject CPU/disk offload for GPU-only benchmark comparisons.")
+    parser.add_argument("--batch-size", type=int, default=1, help="Number of sequences processed simultaneously.")
+    parser.add_argument("--nsamples", type=int, default=128, help="Total sequences per repetition; must be a multiple of batch-size.")
+    parser.add_argument("--repetitions", type=int, default=5, help="Repeated runs over the same prepared inputs.")
+    parser.add_argument("--warmup-steps", type=int, default=5, help="Untimed token steps before each batch in every repetition.")
+    parser.add_argument("--results-file", type=str, default=None, help="Save settings, summary, and raw timing measurements as JSON.")
     parser.add_argument("--seed", type=int, default=42, help="Seed for sampling the calibration data.")
     parser.add_argument(
         "--sparsity", type=float, default=0.0, help="A measure of how much slicing is applied (in the range [0, 1))"
@@ -76,10 +85,19 @@ def benchmarking_arg_parser(interactive: bool = True) -> argparse.Namespace:
 def process_benchmarking_args(args: argparse.Namespace):
     logging.debug(f'Parsed arguments:')
     for arg, argv in vars(args).items():
-        logging.debug(f'{arg} = {argv}')
+        logging.debug('%s = %s', arg, '[redacted]' if arg == 'hf_token' else argv)
 
     if not 0 <= args.sparsity < 1:
         raise argparse.ArgumentTypeError(f"Sparsity should be in the range [0, 1)")
+
+    if min(args.ntokens, args.batch_size, args.nsamples, args.repetitions) <= 0:
+        raise argparse.ArgumentTypeError("ntokens, batch-size, nsamples, and repetitions must be positive")
+    if args.nsamples % args.batch_size:
+        raise argparse.ArgumentTypeError("nsamples must be a multiple of batch-size so all timed batches have equal size")
+    if args.prompt_tokens < 0:
+        raise argparse.ArgumentTypeError("prompt-tokens must be nonnegative")
+    if args.warmup_steps < 0:
+        raise argparse.ArgumentTypeError("warmup-steps must be nonnegative")
 
     if args.device:
         config.device = torch.device(args.device)
@@ -88,6 +106,10 @@ def process_benchmarking_args(args: argparse.Namespace):
         config.dtype = torch.float16
     elif args.dtype == "fp32":
         config.dtype = torch.float32
+    elif args.dtype == "bf16":
+        config.dtype = torch.bfloat16
+    elif args.dtype == "auto":
+        config.dtype = None
     else:
         raise argparse.ArgumentTypeError(f"Data type should be one of 'fp16', 'fp32'")
 
@@ -109,7 +131,7 @@ def benchmarking_main(args: argparse.Namespace) -> None:
         # load the model from sliced_model_path to compute perplexity and skip rotation and slicing
         logging.info(f"Loading sliced {args.model} model from {args.sliced_model_path} with sparsity {args.sparsity}")
         model_adapter, tokenizer = hf_utils.load_sliced_model(
-            args.model, args.sliced_model_path, sparsity=args.sparsity, token=args.hf_token
+            args.model, args.sliced_model_path, sparsity=args.sparsity, token=args.hf_token, dtype=config.dtype
         )
     else:
         # load one of the pre-trained models
@@ -123,21 +145,66 @@ def benchmarking_main(args: argparse.Namespace) -> None:
     else:
         model_adapter.model.to(device=config.device)
 
+    if args.require_gpu_resident_model:
+        placement = getattr(model_adapter.model, "hf_device_map", {})
+        offloaded = any(str(device) in {"cpu", "disk"} for device in placement.values())
+        if offloaded or any(p.device.type != "cuda" for p in model_adapter.model.parameters()):
+            raise RuntimeError("GPU-only benchmark requested, but model parameters are on CPU/disk/meta")
+
+    sequence_length = args.prompt_tokens + args.ntokens
+    if sequence_length > model_adapter.seqlen:
+        raise ValueError(f"prompt-tokens + ntokens exceeds the model context length ({model_adapter.seqlen})")
+
     dataset = data_utils.get_dataset(args.eval_dataset)
     train_loader = data_utils.prepare_dataloader(
         dataset=dataset["train"],
         tokenizer=tokenizer,
-        max_seqlen=model_adapter.seqlen,
+        max_seqlen=sequence_length,
         batch_size=args.batch_size,
-        nsamples=args.ntokens,
+        nsamples=args.nsamples,
+        exact_seqlen=True,
         seed=args.seed,
     )
 
-    results = gpu_utils.benchmark(model_adapter, next(iter(train_loader)))
-    logging.info(f"Median time per batch: {results['median_time']} s/batch.")
-    logging.info(f"Throughput: {results['throughput']} token/s.")
-    logging.info(f"Latency: {results['latency']} s/token.")
-    wandb.log(results)
+    # Materialize once on CPU: keep sequence order and batch membership identical
+    # across repetitions, and keep data preparation outside the measurements.
+    batches = [{key: batch[key] for key in ("input_ids", "attention_mask")} for batch in train_loader]
+    if (sum(batch["input_ids"].shape[0] for batch in batches) != args.nsamples
+            or any(batch["input_ids"].shape != (args.batch_size, sequence_length) for batch in batches)):
+        raise ValueError("Dataset did not produce the requested full batches and token count; choose another seed or dataset")
+    logging.info(
+        f"Cached token-forward benchmark: {args.nsamples} sequences, batch size {args.batch_size}, "
+        f"{args.prompt_tokens} prompt tokens, {args.ntokens} decode steps per sequence, {args.repetitions} repetitions, "
+        f"{args.warmup_steps} untimed warmup steps per batch."
+    )
+    results = gpu_utils.benchmark_batches(model_adapter, batches, args.repetitions, args.warmup_steps, prompt_tokens=args.prompt_tokens)
+    fingerprint = hashlib.sha256()
+    for batch in batches:
+        for key in ("input_ids", "attention_mask"):
+            fingerprint.update(batch[key].cpu().contiguous().numpy().tobytes())
+    results["input_sha256"] = fingerprint.hexdigest()
+    results["settings"] = {key: value for key, value in vars(args).items() if key != "hf_token"}
+    results["torch_version"] = str(torch.__version__)
+    summary = {}
+    metrics = [
+        ("throughput_tokens_per_second", "Throughput (tokens/s)"),
+        ("mean_step_latency_seconds", "Mean decode-step latency (s/step)"),
+        ("total_time_seconds", "Measured decode forward time per repetition (s)"),
+    ]
+    if args.prompt_tokens:
+        metrics.append(("ttft_seconds", "Model-only time to first token (s)"))
+    for metric, label in metrics:
+        values = results[metric]
+        spread = f"{values['std']:.6g}" if values['std'] is not None else "unavailable (one repetition)"
+        logging.info(f"{label}: mean {values['mean']:.6g}, std {spread}")
+        summary.update({f"{metric}/{stat}": value for stat, value in values.items() if value is not None})
+    wandb.log(summary)
+    if args.results_file:
+        output = pathlib.Path(args.results_file)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(json.dumps(results, indent=2, allow_nan=False) + "\n")
+        logging.info(f"Saved benchmark results to {output}")
+
 
 
 if __name__ == "__main__":

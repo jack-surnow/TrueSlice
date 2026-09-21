@@ -3,7 +3,10 @@
 
 import argparse
 import logging
+import json
 import os
+import pathlib
+import time
 
 import math
 import torch
@@ -12,6 +15,13 @@ import wandb
 from trueslice import data_utils, gpu_utils, hf_utils, layernorm_fusion, rotate, utils
 from trueslice.config import config
 from trueslice.slicing_scheduler import ConstSlicingScheduler
+
+
+def computation_timestamp() -> float:
+    """Read wall time after all pending work on the compression device finishes."""
+    if config.device.type == "cuda":
+        torch.cuda.synchronize(config.device)
+    return time.perf_counter()
 
 
 def slicing_arg_parser(interactive: bool = True) -> argparse.Namespace:
@@ -81,6 +91,8 @@ def slicing_arg_parser(interactive: bool = True) -> argparse.Namespace:
         help="Use accelerate to put the model on multiple GPUs for evaluation. It is recommended to use it for models with 30B parameters and above.",
     )
 
+    parser.add_argument("--results-file", type=str, default=None, help="Save compression-only timing and parameter counts as JSON.")
+    parser.add_argument("--skip-ppl-eval", action="store_true", help="Skip final perplexity evaluation after compression.")
     parser.add_argument("--save-dir", type=str, default=None, help="Path to save the model.")
 
     parser.add_argument('--hf-token', type=str, default=os.getenv('HF_TOKEN', None))
@@ -99,7 +111,7 @@ def slicing_arg_parser(interactive: bool = True) -> argparse.Namespace:
 
 def process_slicing_args(args):
     for arg, argv in vars(args).items():
-        logging.debug(f'{arg} = {argv}')
+        logging.debug('%s = %s', arg, '[redacted]' if arg == 'hf_token' else argv)
 
     if not 0 <= args.sparsity < 1:
         raise argparse.ArgumentTypeError(f"Sparsity should be in the range [0, 1)")
@@ -157,9 +169,11 @@ def slicing_main(args: argparse.Namespace) -> None:
         varied_seqlen=args.varied_seqlen,
         seed=args.seed,
     )
-    test_loader = data_utils.prepare_test_dataloader(
-        dataset=test_dataset, tokenizer=tokenizer, batch_size=args.ppl_eval_batch_size
-    )
+    test_loader = None
+    if not args.skip_ppl_eval or args.ppl_only or args.eval_baseline or args.eval_fused_model:
+        test_loader = data_utils.prepare_test_dataloader(
+            dataset=test_dataset, tokenizer=tokenizer, batch_size=args.ppl_eval_batch_size
+        )
 
     dense_param_count = sum(int(p.nelement()) for p in model.parameters())
     logging.info(f'Dense model parameters: {dense_param_count:,d}')
@@ -180,6 +194,9 @@ def slicing_main(args: argparse.Namespace) -> None:
         wandb.log({"original_ppl": dataset_ppl})
         model.to("cpu")
         utils.cleanup_memory()
+
+    # Time compression only: exclude loading, data preparation, evaluation, and saving.
+    computation_start = computation_timestamp()
 
     # fuse layernorms and add rotations to skip connections
     layernorm_fusion.fuse_modules(model_adapter)
@@ -203,6 +220,26 @@ def slicing_main(args: argparse.Namespace) -> None:
 
     layernorm_fusion.restore_norms(model_adapter, new_embedding_dimension)
 
+    computation_seconds = computation_timestamp() - computation_start
+    logging.info(f'Total compression computation time: {computation_seconds:.3f} seconds')
+    wandb.log({"compression_time_seconds": computation_seconds})
+
+    if args.results_file:
+        result_path = pathlib.Path(args.results_file)
+        result_path.parent.mkdir(parents=True, exist_ok=True)
+        compressed_params = sum(int(p.nelement()) for p in model.parameters())
+        result_path.write_text(json.dumps({
+            "method": "trueslice",
+            "model": args.model,
+            "input_sparsity": args.sparsity,
+            "compression_time_seconds": computation_seconds,
+            "dense_parameters": dense_param_count,
+            "compressed_parameters": compressed_params,
+            "parameter_reduction_fraction": 1 - compressed_params / dense_param_count,
+            "embedding_dimension": new_embedding_dimension,
+            "excludes": ["model_loading", "model_saving", "dataset_preparation", "perplexity_evaluation"],
+        }, indent=2) + "\n")
+
     if args.save_dir:
         hf_utils.save_model(model_adapter, model, args)
 
@@ -211,6 +248,9 @@ def slicing_main(args: argparse.Namespace) -> None:
     logging.info(f'Sliced model parameters: {sliced_param_count:,d} (sliced fraction {sliced_fraction:.4f})')
 
     utils.cleanup_memory()
+
+    if args.skip_ppl_eval:
+        return
 
     reset_model_device()
     dataset_ppl = gpu_utils.evaluate_ppl(model, model.config.pad_token_id, test_loader)
