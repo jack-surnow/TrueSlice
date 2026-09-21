@@ -333,10 +333,11 @@ def rotate_and_slice_parallel(
 
     cleanup_memory()
 
-    for layer_adapter in tqdm(layers, unit="layer", desc="Accumulating Covariance"):
+    for layer_idx, layer_adapter in enumerate(tqdm(layers, unit="layer", desc="Accumulating Covariance")):
         layer = layer_adapter.layer.to(device=config.device)
 
-        outputs = get_signals_parallel(layer_adapter, args, kwargs)
+        layer_kwargs = [batch_kwargs["layer_kwargs"][layer_idx] for batch_kwargs in kwargs]
+        outputs = get_signals_parallel(layer_adapter, args, layer_kwargs)
 
         # Accumulate with normalization
         C_layer = get_scatter_mat(outputs, ignore_masks)
