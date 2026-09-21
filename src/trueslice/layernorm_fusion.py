@@ -170,7 +170,8 @@ def restore_norms(model_adapter: ModelAdapter, d_new) -> None:
         norm_layer = model_adapter.original_layer_norm_type(dim, eps=eps * (scale_factor ** 2)).to(device=target_device, dtype=target_dtype)
 
         if hasattr(norm_layer, 'weight') and norm_layer.weight is not None:
-            nn.init.constant_(norm_layer.weight, scale_factor)
+            # Qwen3.5 applies (1 + weight); ordinary RMSNorm applies weight.
+            nn.init.constant_(norm_layer.weight, scale_factor - model_adapter.layernorm_weight_offset)
 
         if hasattr(norm_layer, 'bias') and norm_layer.bias is not None:
             nn.init.zeros_(norm_layer.bias)

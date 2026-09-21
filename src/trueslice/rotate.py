@@ -190,10 +190,17 @@ def rotate_and_slice_sequential(
 
     cleanup_memory()
 
-    for layer_adapter in tqdm(layers, unit="layer", desc="Accumulating Covariance"):
+    for layer_idx, layer_adapter in enumerate(tqdm(layers, unit="layer", desc="Accumulating Covariance")):
         layer_adapter.layer.to(device=config.device)
 
-        mlp_ln_inputs, layer_outputs = get_signals_sequential(layer_adapter, args, kwargs)
+        layer_kwargs = [
+            batch_kwargs["layer_kwargs"][layer_idx]
+            for batch_kwargs in kwargs
+        ]
+
+        mlp_ln_inputs, layer_outputs = get_signals_sequential(
+            layer_adapter, args, layer_kwargs
+        )
 
         # Acculumate with normalization
         C_mlp = get_scatter_mat(mlp_ln_inputs, ignore_masks)

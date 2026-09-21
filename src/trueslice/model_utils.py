@@ -14,109 +14,57 @@ from .model_adapter import LayerAdapter, ModelAdapter
 
 
 @torch.no_grad()
-def get_layer0_inputs(model_adapter: ModelAdapter, batch: Tensor) -> tuple[Tensor, tuple, dict[str, Any]]:
+def get_layer0_inputs(model_adapter: ModelAdapter, batch: dict[str, Tensor]) -> tuple[Tensor, tuple, dict[str, Any]]:
+    """Capture embeddings and each decoder's kwargs without running decoders.
+
+    Unlike first-layer-only capture, this preserves hybrid models' per-layer masks.
+    Catchers pass hidden states through unchanged until the last layer is reached.
     """
-    Returns the inputs to the first layer of the model (after embeddings).
+    layers = model_adapter.get_layers()
+    pre_layer_modules = model_adapter.get_pre_layer_modules()
+    saved_kwargs = []
 
-    Also returns the additional args and kwargs that are passed to
-    the first layer (such as the attention mask, or caches K/V values).
-
-    This relies on all arguments to subsequent layers being the same.
-
-    NB: this won't work from OPT 350m.
-    """
-
-    class Catcher(torch.nn.Module):
-        def __init__(self, layer):
-            super().__init__()
-
-            if hasattr(layer, "attention_type"):
-                self.attention_type = layer.attention_type
-
-        def forward(self, *args, **kwargs):
-            self.saved_args = args
-            self.saved_kwargs = kwargs
-            raise ValueError
-
-    layer0_adapter = model_adapter.get_layers()[0]
-    layer0_catcher = Catcher(layer0_adapter.layer)
-    model_adapter.set_raw_layer_at(0, layer0_catcher)
-
-    try:
-        batch = utils.map_tensors(batch, device=config.device)
-        model_adapter.model(**batch)
-    except ValueError:
+    class InputsCaptured(Exception):
         pass
 
-    # grab the inputs and caught arguments
-    args = layer0_catcher.saved_args
-    kwargs = layer0_catcher.saved_kwargs
+    class Catcher(torch.nn.Module):
+        def __init__(self, layer_adapter, last):
+            super().__init__()
+            self.last = last
+            self.hidden_states_position = layer_adapter.hidden_states_args_position
+            for name in ("attention_type", "layer_type", "block_type"):
+                if hasattr(layer_adapter.layer, name):
+                    setattr(self, name, getattr(layer_adapter.layer, name))
 
-    # put the caught stuff on cpu
-    args = utils.map_tensors(args, device='cpu')
-    kwargs = utils.map_tensors(kwargs, device='cpu')
+        def forward(self, *args, **kwargs):
+            if not saved_kwargs:
+                self.saved_args = args
+            saved_kwargs.append(kwargs)
+            if self.last:
+                raise InputsCaptured
+            hidden = args[self.hidden_states_position]
+            return (hidden,) if model_adapter.decoder_returns_tuple else hidden
 
-    # put the layer back to normal
-    model_adapter.set_raw_layer_at(0, layer0_adapter.layer)
+    catchers = [Catcher(layer, i == len(layers) - 1) for i, layer in enumerate(layers)]
+    try:
+        for module in pre_layer_modules:
+            module.to(config.device)
+        for i, catcher in enumerate(catchers):
+            model_adapter.set_raw_layer_at(i, catcher)
+        batch = utils.map_tensors(batch, device=config.device)
+        model_adapter.model(**{**batch, "use_cache": False, "past_key_values": None})
+    except InputsCaptured:
+        pass
+    finally:
+        for i, layer in enumerate(layers):
+            model_adapter.set_raw_layer_at(i, layer.layer)
+        for module in pre_layer_modules:
+            module.to("cpu")
+        utils.cleanup_memory()
 
-    # Run GC and cleanup GPU memory
-    utils.cleanup_memory()
-
-    return args[layer0_adapter.hidden_states_args_position], args, kwargs
-
-
-# @torch.no_grad()
-# def get_layer0_inputs(model_adapter: ModelAdapter, batch: dict[str, Tensor]) -> tuple[Tensor, tuple, dict[str, Any]]:
-#     """Capture embeddings and each decoder's kwargs without running decoders.
-
-#     Unlike first-layer-only capture, this preserves hybrid models' per-layer masks.
-#     Catchers pass hidden states through unchanged until the last layer is reached.
-#     """
-#     layers = model_adapter.get_layers()
-#     pre_layer_modules = model_adapter.get_pre_layer_modules()
-#     saved_kwargs = []
-
-#     class InputsCaptured(Exception):
-#         pass
-
-#     class Catcher(torch.nn.Module):
-#         def __init__(self, layer_adapter, last):
-#             super().__init__()
-#             self.last = last
-#             self.hidden_states_position = layer_adapter.hidden_states_args_position
-#             for name in ("attention_type", "layer_type", "block_type"):
-#                 if hasattr(layer_adapter.layer, name):
-#                     setattr(self, name, getattr(layer_adapter.layer, name))
-
-#         def forward(self, *args, **kwargs):
-#             if not saved_kwargs:
-#                 self.saved_args = args
-#             saved_kwargs.append(kwargs)
-#             if self.last:
-#                 raise InputsCaptured
-#             hidden = args[self.hidden_states_position]
-#             return (hidden,) if model_adapter.decoder_returns_tuple else hidden
-
-#     catchers = [Catcher(layer, i == len(layers) - 1) for i, layer in enumerate(layers)]
-#     try:
-#         for module in pre_layer_modules:
-#             module.to(config.device)
-#         for i, catcher in enumerate(catchers):
-#             model_adapter.set_raw_layer_at(i, catcher)
-#         batch = utils.map_tensors(batch, device=config.device)
-#         model_adapter.model(**{**batch, "use_cache": False, "past_key_values": None})
-#     except InputsCaptured:
-#         pass
-#     finally:
-#         for i, layer in enumerate(layers):
-#             model_adapter.set_raw_layer_at(i, layer.layer)
-#         for module in pre_layer_modules:
-#             module.to("cpu")
-#         utils.cleanup_memory()
-
-#     args = utils.map_tensors(catchers[0].saved_args, device="cpu")
-#     kwargs = {"layer_kwargs": utils.map_tensors(saved_kwargs, device="cpu")}
-#     return args[layers[0].hidden_states_args_position], args, kwargs
+    args = utils.map_tensors(catchers[0].saved_args, device="cpu")
+    kwargs = {"layer_kwargs": utils.map_tensors(saved_kwargs, device="cpu")}
+    return args[layers[0].hidden_states_args_position], args, kwargs
 
 
 @torch.no_grad()
