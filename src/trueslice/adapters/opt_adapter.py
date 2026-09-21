@@ -57,6 +57,9 @@ class OPTLayerAdapter(LayerAdapter):
 
 
 class OPTModelAdapter(ModelAdapter):
+    decoder_returns_tuple = True
+    should_bake_mean_into_linear = True
+    
     def __init__(self, model: OPTForCausalLM) -> None:
         super().__init__()
         self._model: OPTForCausalLM = model
@@ -74,20 +77,12 @@ class OPTModelAdapter(ModelAdapter):
         return OPTConfig
 
     @property
-    def parallel_blocks(self) -> bool:
-        return False
-
-    @property
     def seqlen(self) -> int:
         return self.config.max_position_embeddings
 
     @property
     def hidden_size(self) -> int:
         return self.config.hidden_size
-
-    @property
-    def should_bake_mean_into_linear(self) -> bool:
-        return True
 
     @property
     def original_layer_type(self) -> type:
@@ -144,6 +139,8 @@ class OPTModelAdapter(ModelAdapter):
         model_name: str,
         model_path: str,
         *,
+        device_map: str | dict[str, int] | None = "cpu",
+        max_memory: dict[str, int] | None = None,
         dtype: torch.dtype = torch.float16,
         local_files_only: bool = False,
         token: str | bool | None = None,
@@ -151,31 +148,10 @@ class OPTModelAdapter(ModelAdapter):
         if not model_name.startswith("facebook/opt"):
             return None
 
-        model = OPTForCausalLM.from_pretrained(model_path, torch_dtype=dtype, local_files_only=local_files_only)
+        model = OPTForCausalLM.from_pretrained(
+            model_path, torch_dtype=dtype, local_files_only=local_files_only, device_map=device_map, max_memory=max_memory
+        )
         model.config.torch_dtype = dtype
 
         return OPTModelAdapter(model)
 
-    @classmethod
-    def _from_uninitialized(
-        cls,
-        model_name: str,
-        model_path: str,
-        *,
-        dtype: torch.dtype = torch.float16,
-        local_files_only: bool = False,
-        token: str | bool | None = None,
-    ) -> ModelAdapter | None:
-        if not model_name.startswith("facebook/opt"):
-            return None
-
-        class UninitializedOPTForCausalLM(OPTForCausalLM):
-            def _init_weights(self, _) -> None:
-                # Prevent weight initialization
-                pass
-
-        config = OPTConfig.from_pretrained(model_path, torch_dtype=dtype, local_files_only=local_files_only)
-        model = UninitializedOPTForCausalLM(config)
-        model = model.to(dtype=dtype)
-
-        return OPTModelAdapter(model)

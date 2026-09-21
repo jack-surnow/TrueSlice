@@ -10,8 +10,8 @@ from tqdm import tqdm
 from .config import config
 from .model_adapter import LayerAdapter, ModelAdapter
 from .model_utils import get_layer0_inputs, get_signals_sequential, get_signals_parallel
-from .slicing_scheduler import ConfigSlicingScheduler, ConstSlicingScheduler, SlicingScheduler
-from .utils import cleanup_memory, map_tensors
+from .slicing_scheduler import SlicingScheduler
+from .utils import cleanup_memory
 
 
 def rotate_attention_inputs(layer_adapter: LayerAdapter, Q: torch.Tensor) -> None:
@@ -159,6 +159,10 @@ def rotate_and_slice_sequential(
     for W in model_adapter.get_embeddings():
         W.to(device=config.device)
 
+    base_model = getattr(model_adapter.model, "model", model_adapter.model)
+    if hasattr(base_model, "rotary_emb"):
+        base_model.rotary_emb.to(config.device)
+
     inps, args, kwargs, ignore_masks = [], [], [], []
     for batch in dataloader:
         inp_batch, args_batch, kwargs_batch = get_layer0_inputs(model_adapter, batch)
@@ -170,6 +174,9 @@ def rotate_and_slice_sequential(
 
     for W in model_adapter.get_embeddings():
         W.to("cpu")
+
+    if hasattr(base_model, "rotary_emb"):
+        base_model.rotary_emb.to("cpu")
 
     slicing_scheduler.setup(hidden_size=model_adapter.hidden_size, layers_num=len(layers), parallel_blocks=False)
 
@@ -322,7 +329,7 @@ def rotate_and_slice_parallel(
     for layer_adapter in tqdm(layers, unit="layer", desc="Accumulating Covariance"):
         layer = layer_adapter.layer.to(device=config.device)
 
-        outputs = get_signals_sequential(layer_adapter, args, kwargs)
+        outputs = get_signals_parallel(layer_adapter, args, kwargs)
 
         # Accumulate with normalization
         C_layer = get_scatter_mat(outputs, ignore_masks)

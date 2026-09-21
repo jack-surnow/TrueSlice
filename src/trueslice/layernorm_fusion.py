@@ -24,7 +24,6 @@ def replace_modules(
         Module,
     ],
     replace_layers: bool,
-    ignore_names: list[str] = None,
 ) -> None:
     """Replace modules of given type using the supplied module factory.
 
@@ -38,13 +37,7 @@ def replace_modules(
         new_module_factory: a function that given a module that should be replaced
             produces a module to replace it with.
     """
-    if ignore_names is None:
-        ignore_names = []
-
     for name, module in root.named_children():
-        if name in ignore_names:
-            continue
-
         new_module = None
         if isinstance(module, type_to_replace):
             if replace_layers:  # layernorm_fusion.replace_layers case where transformer layers are replaced
@@ -52,7 +45,7 @@ def replace_modules(
             else:  # layernorm_fusion.fuse_modules case where layernorms are fused
                 new_module = new_module_factory(module)
         elif len(list(module.children())) > 0:
-            replace_modules(module, type_to_replace, new_module_factory, replace_layers, ignore_names)
+            replace_modules(module, type_to_replace, new_module_factory, replace_layers)
 
         if new_module is not None:
             setattr(root, name, new_module)
@@ -79,33 +72,48 @@ def fuse_modules(model_adapter: ModelAdapter) -> None:
             W_ = W.weight.data.double()
             W.weight.data = (W_ - W_.mean(dim=-1, keepdim=True)).to(W.weight.data.dtype)
 
-    layers = model_adapter.get_layers()
+    layer_adapters = model_adapter.get_layers()
+    weight_offset = model_adapter.layernorm_weight_offset
 
     # First we modify the layernorms to fold their weights
-    for layer_adapter in layers:
+    for layer_adapter in layer_adapters:
         if model_adapter.parallel_blocks:
             fuse_ln_linear(
                 layer_adapter.get_first_layernorm(),
                 layer_adapter.get_attention_inputs() + layer_adapter.get_mlp_inputs(),
+                weight_offset=weight_offset,
             )
         else:
-            fuse_ln_linear(layer_adapter.get_first_layernorm(), layer_adapter.get_attention_inputs())
-            fuse_ln_linear(layer_adapter.get_second_layernorm(), layer_adapter.get_mlp_inputs())
+            fuse_ln_linear(layer_adapter.get_first_layernorm(), layer_adapter.get_attention_inputs(), weight_offset=weight_offset)
+            fuse_ln_linear(layer_adapter.get_second_layernorm(), layer_adapter.get_mlp_inputs(), weight_offset=weight_offset)
 
         if model_adapter.should_bake_mean_into_linear:
             # Then we bake the mean substitution into the previous linear layers
             bake_mean_into_linear(layer_adapter.get_attention_output())
             bake_mean_into_linear(layer_adapter.get_mlp_output())
 
-    fuse_ln_linear(model_adapter.get_pre_head_layernorm(), [model_adapter.get_lm_head()])
+    fuse_ln_linear(model_adapter.get_pre_head_layernorm(), [model_adapter.get_lm_head()], weight_offset=weight_offset)
 
-    replace_modules(
-        model_adapter.model,
-        model_adapter.original_layer_norm_type,
-        lambda _: RMSN(model_adapter.hidden_size),
-        replace_layers=False,
-        ignore_names=["q_norm", "k_norm"],
-    )
+    # replace_modules(
+    #     model_adapter.model,
+    #     model_adapter.original_layer_norm_type,
+    #     lambda _: RMSN(model_adapter.hidden_size),
+    #     replace_layers=False,
+    #     ignore_names=["q_norm", "k_norm"],
+    # )
+
+    config = model_adapter.model.config
+    eps = getattr(config, "rms_norm_eps", 
+        getattr(config, "layer_norm_eps", 
+        getattr(config, "layer_norm_epsilon", 1e-5)))
+
+    # Replace only residual-stream norms, preserving head/internal mixer norms.
+    for layer_adapter in layer_adapters:
+        layer_adapter.set_first_layernorm(RMSN(model_adapter.hidden_size, eps))
+        if not model_adapter.parallel_blocks:
+            layer_adapter.set_second_layernorm(RMSN(model_adapter.hidden_size, eps))
+    model_adapter.set_pre_head_layernorm(RMSN(model_adapter.hidden_size, eps))
+    
     logging.info("Fusing layernorm modules done")
 
 
@@ -125,7 +133,7 @@ def bake_mean_into_linear(linear: Linear) -> None:
         linear.bias.data = linear.bias.data.to(linear_dtype)
 
 
-def fuse_ln_linear(layernorm: Module, linear_layers: Iterable[Linear]) -> None:
+def fuse_ln_linear(layernorm: Module, linear_layers: Iterable[Linear], weight_offset: float = 0.0) -> None:
     """
     fuse the linear operations in Layernorm into the adjacent linear blocks.
     """
@@ -134,7 +142,7 @@ def fuse_ln_linear(layernorm: Module, linear_layers: Iterable[Linear]) -> None:
 
         # Calculating new weight and bias
         W_ = linear.weight.data.double()
-        linear.weight.data = (W_ * layernorm.weight.double()).to(linear_dtype)
+        linear.weight.data = (W_ * (layernorm.weight.double() + weight_offset)).to(linear_dtype)
 
         if hasattr(layernorm, 'bias'):
             if linear.bias is None:
@@ -159,8 +167,7 @@ def restore_norms(model_adapter: ModelAdapter, d_new) -> None:
     standard_scale = math.sqrt(d_original / d_new)
 
     def create_norm(dim: int,scale_factor: float) -> nn.Module:
-        norm_layer = model_adapter.original_layer_norm_type(dim, eps=eps)
-        norm_layer = norm_layer.to(device=target_device, dtype=target_dtype)
+        norm_layer = model_adapter.original_layer_norm_type(dim, eps=eps * (scale_factor ** 2)).to(device=target_device, dtype=target_dtype)
 
         if hasattr(norm_layer, 'weight') and norm_layer.weight is not None:
             nn.init.constant_(norm_layer.weight, scale_factor)
@@ -177,5 +184,13 @@ def restore_norms(model_adapter: ModelAdapter, d_new) -> None:
             layer_adapter.set_second_layernorm(create_norm(d_new, standard_scale))
 
     model_adapter.set_pre_head_layernorm(create_norm(d_new, standard_scale))
+
+    # This will currently alter additional norm epsilons like for the q/k norms in Qwen3 which we do not want to alter.
+    # We would to to appropriately scale the subsequent weights.
+    # restored_eps = eps * standard_scale**2
+    # for field in ("rms_norm_eps", "layer_norm_eps", "layer_norm_epsilon"):
+    #     if hasattr(config, field):
+    #         setattr(config, field, restored_eps)
+    #         break
 
     logging.info("Restoration of original norm layers complete")

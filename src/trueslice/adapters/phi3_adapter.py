@@ -82,10 +82,6 @@ class Phi3ModelAdapter(ModelAdapter):
         return Phi3Config
 
     @property
-    def parallel_blocks(self) -> bool:
-        return False
-
-    @property
     def seqlen(self) -> int:
         # if no sliding window, max_position_embeddings is same as original_max_position_embeddings
         return self.config.max_position_embeddings
@@ -93,10 +89,6 @@ class Phi3ModelAdapter(ModelAdapter):
     @property
     def hidden_size(self) -> int:
         return self.config.hidden_size
-
-    @property
-    def should_bake_mean_into_linear(self) -> bool:
-        return False
 
     @property
     def original_layer_type(self) -> type:
@@ -147,12 +139,17 @@ class Phi3ModelAdapter(ModelAdapter):
     def get_lm_head(self) -> Linear:
         return self.model.lm_head
 
+    def get_pre_layer_modules(self) -> list[Module]:
+        return self.get_embeddings() + [self.model.model.rotary_emb]
+
     @classmethod
     def _from_pretrained(
         cls,
         model_name: str,
         model_path: str,
         *,
+        device_map: str | dict[str, int] | None = "cpu",
+        max_memory: dict[str, int] | None = None,
         dtype: torch.dtype = torch.float16,
         local_files_only: bool = False,
         token: str | bool | None = None,
@@ -161,34 +158,9 @@ class Phi3ModelAdapter(ModelAdapter):
             return None
 
         model = Phi3ForCausalLM.from_pretrained(
-            model_path, torch_dtype=dtype, token=token, local_files_only=local_files_only
+            model_path, torch_dtype=dtype, token=token, local_files_only=local_files_only, device_map=device_map, max_memory=max_memory
         )
         model.config.torch_dtype = dtype
 
         return Phi3ModelAdapter(model)
 
-    @classmethod
-    def _from_uninitialized(
-        cls,
-        model_name: str,
-        model_path: str,
-        *,
-        dtype: torch.dtype = torch.float16,
-        local_files_only: bool = False,
-        token: str | bool | None = None,
-    ) -> ModelAdapter | None:
-        if not model_name.startswith("microsoft/Phi-3-mini-4k-instruct"):
-            return None
-
-        class UninitializedPhi3ForCausalLM(Phi3ForCausalLM):
-            def _init_weights(self, _) -> None:
-                # Prevent weight initialization
-                pass
-
-        config = Phi3Config.from_pretrained(
-            model_path, torch_dtype=dtype, token=token, local_files_only=local_files_only
-        )
-        model = UninitializedPhi3ForCausalLM(config)
-        model = model.to(dtype=dtype)
-
-        return Phi3ModelAdapter(model)

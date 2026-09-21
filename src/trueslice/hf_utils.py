@@ -71,36 +71,14 @@ def get_model_and_tokenizer(
     model_name: str,
     model_path: str | None = None,
     *,
-    uninitialized: bool = False,
+    device_map: str | dict[str, int] | None = "cpu",
+    max_memory: dict[str, int] | None = None,
     dtype: torch.dtype | None = None,
     token: str | bool | None = None,
 ) -> tuple[ModelAdapter, PreTrainedTokenizerBase]:
     """
-    Load the model and the tokenizer from the given path.
-    Set uninitialized to True when loading a pre-rotated and sliced model; in this case no weights are loaded
-    in this method.
-    The corresponding model adapter class must be imported before calling this method.
-    Scenarios:
-    - Rotate & slice HF model: model_name = name, model_path = empty, uninitialized = False
-        -> Obtain the model config and weights from HF through path = name.
-        -> Ignore model_path if provided.
-    - Slice pre-rotated HF model: model_name = name, model_path = empty or local path, uninitialized = True
-        -> Obtain the model config from HF via path = name and create uninitialized model.
-        -> If the model_path is provided, confirm this use case by checking that config.json does not exist.
-        -> There are no other uses of model_path in this case.
-    - Rotate & slice local model: model_name = name, model_path = local path, uninitialized = False
-        -> Obtain the model config through path, and the pretrained weights from the local path.
-        -> Use the model name only to determine the correct model adapter to use.
-    - Slice pre-rotated local model: model_name = name, model_path = local path, uninitialized = True
-        -> Obtain the model config from the local path and create an uninitialized model.
-        -> Use the model name only to determine the correct model adapter to use.
-        -> Confirm this case by checking that config.json exists.
     """
-    model_type = "uninitialized" if uninitialized else "pretrained"
     local_model = model_path is not None
-
-    if local_model and uninitialized:
-        local_model = (pathlib.Path(model_path) / "config.json").exists()
 
     # for HF models the path to use is the model name
     if not local_model:
@@ -116,7 +94,7 @@ def get_model_and_tokenizer(
     logging.info(
         f"Loading %s config %s from %s with dtype %s",
         model_name,
-        "and model weights" if not uninitialized else "",
+        "and model weights",
         model_path if local_model else 'Hugging Face',
         resolved_dtype,
     )
@@ -124,7 +102,8 @@ def get_model_and_tokenizer(
     model_adapter = ModelAdapter.from_model(
         model_name,
         model_path=model_path,
-        model_type=model_type,
+        device_map=device_map,
+        max_memory=max_memory,
         dtype=resolved_dtype,
         local_files_only=local_model,
         token=token,

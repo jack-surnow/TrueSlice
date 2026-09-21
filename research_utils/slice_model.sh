@@ -6,6 +6,8 @@ RUN_DENSE_PPL=0
 RUN_TRUESLICE=1
 RUN_SLICEGPT=0
 
+ROTATION="pca"
+
 MODELS=(
   "meta-llama/Llama-3.2-1B|Llama-3.2-1B"
   # "meta-llama/Llama-3.2-3B|Llama-3.2-3B"
@@ -14,7 +16,7 @@ MODELS=(
   # "Qwen/Qwen3-1.7B|Qwen3-1.7B"
   # "Qwen/Qwen3-4B|Qwen3-4B"
   # "Qwen/Qwen3-8B|Qwen3-8B"
-  # "Qwen/Qwen3-14B|Qwen3-14B"
+  # "Qwen/Qwen3-14B|Qwen3-14B_U"
 
   # "Qwen/Qwen3.5-4B|Qwen3.5-4B"
 )
@@ -96,7 +98,6 @@ for MODEL_ENTRY in "${MODELS[@]}"; do
         --cal-batch-size "${CAL_BATCH_SIZE}" \
         --cal-max-seqlen 2048 \
         --seed 42 \
-        --final-orientation random \
         --ppl-eval-seqlen 2048 \
         --ppl-eval-batch-size "${EVAL_BATCH_SIZE}" \
         --ppl-eval-nsamples "${EVAL_SET_SIZE}" \
@@ -124,7 +125,7 @@ for MODEL_ENTRY in "${MODELS[@]}"; do
           --seed 42 \
           --sparsity "${SPARSITY}" \
           --round-interval 1 \
-          --final-orientation random \
+          --final-orientation ${ROTATION} \
           --ppl-eval-seqlen 2048 \
           --ppl-eval-batch-size "${EVAL_BATCH_SIZE}" \
           --ppl-eval-nsamples "${EVAL_SET_SIZE}" \
@@ -153,7 +154,7 @@ for MODEL_ENTRY in "${MODELS[@]}"; do
           --seed 42 \
           --sparsity "${SPARSITY}" \
           --round-interval 1 \
-          --final-orientation random \
+          --final-orientation ${ROTATION} \
           --ppl-eval-seqlen 2048 \
           --ppl-eval-batch-size "${EVAL_BATCH_SIZE}" \
           --ppl-eval-nsamples "${EVAL_SET_SIZE}" \

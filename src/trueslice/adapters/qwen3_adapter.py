@@ -81,20 +81,12 @@ class Qwen3ModelAdapter(ModelAdapter):
         return Qwen3Config
 
     @property
-    def parallel_blocks(self) -> bool:
-        return False
-
-    @property
     def seqlen(self) -> int:
         return self.config.max_position_embeddings
 
     @property
     def hidden_size(self) -> int:
         return self.config.hidden_size
-
-    @property
-    def should_bake_mean_into_linear(self) -> bool:
-        return False
 
     @property
     def original_layer_type(self) -> type:
@@ -143,6 +135,9 @@ class Qwen3ModelAdapter(ModelAdapter):
     def get_lm_head(self) -> Linear:
         return self.model.lm_head
 
+    def get_pre_layer_modules(self) -> list[Module]:
+        return self.get_embeddings() + [self.model.model.rotary_emb]
+
     def post_init(self, tokenizer: PreTrainedTokenizerBase) -> None:
         # Prevent token ID errors for missing pads
         if tokenizer.pad_token is None:
@@ -155,6 +150,8 @@ class Qwen3ModelAdapter(ModelAdapter):
         model_name: str,
         model_path: str,
         *,
+        device_map: str | dict[str, int] | None = "cpu",
+        max_memory: dict[str, int] | None = None,
         dtype: torch.dtype = torch.float16,
         local_files_only: bool = False,
         token: str | bool | None = None,
@@ -163,34 +160,9 @@ class Qwen3ModelAdapter(ModelAdapter):
             return None
 
         model = Qwen3ForCausalLM.from_pretrained(
-            model_path, torch_dtype=dtype, token=token, local_files_only=local_files_only
+            model_path, torch_dtype=dtype, token=token, local_files_only=local_files_only, device_map=device_map, max_memory=max_memory
         )
         model.config.torch_dtype = dtype
 
         return cls(model)
 
-    @classmethod
-    def _from_uninitialized(
-        cls,
-        model_name: str,
-        model_path: str,
-        *,
-        dtype: torch.dtype = torch.float16,
-        local_files_only: bool = False,
-        token: str | bool | None = None,
-    ) -> ModelAdapter | None:
-        if not (model_name.startswith("Qwen/Qwen3-")):
-            return None
-
-        class UninitializedQwen3ForCausalLM(Qwen3ForCausalLM):
-            def _init_weights(self, _) -> None:
-                # Prevent weight initialization
-                pass
-
-        config = Qwen3Config.from_pretrained(
-            model_path, torch_dtype=dtype, token=token, local_files_only=local_files_only
-        )
-        model = UninitializedQwen3ForCausalLM(config)
-        model = model.to(dtype=dtype)
-
-        return cls(model)
