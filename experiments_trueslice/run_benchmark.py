@@ -1,5 +1,7 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT license.
+#
+# Modified for TrueSlice by the anonymous submission authors.
 
 import argparse
 import logging
@@ -161,7 +163,7 @@ def benchmarking_main(args: argparse.Namespace) -> None:
     fingerprint = hashlib.sha256()
     for batch in batches:
         for key in ("input_ids", "attention_mask"):
-            fingerprint.update(batch[key].cpu().contiguous().numpy().tobytes())
+            fingerprint.update(batch[key].to("cpu").contiguous().numpy().tobytes())
     results["input_sha256"] = fingerprint.hexdigest()
     results["settings"] = {key: value for key, value in vars(args).items() if key != "hf_token"}
     results["torch_version"] = str(torch.__version__)

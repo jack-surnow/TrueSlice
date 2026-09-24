@@ -1,9 +1,17 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT license.
 #
-# This file contains derivations from
-# https://github.com/huggingface/transformers/blob/main/src/transformers/models/qwen3/modeling_qwen3.py
+# Modified for TrueSlice by the anonymous submission authors.
+# Adapted to support Qwen3 and residual rotation shortcuts.
+#
+# Additional notice retained from the inherited adapter code:
 # Copyright 2022 EleutherAI and the HuggingFace Inc. team. All rights reserved.
+#
+# This file also contains derivations from Hugging Face Transformers' Qwen3 implementation:
+# https://github.com/huggingface/transformers/blob/v5.2.0/src/transformers/models/qwen3/modeling_qwen3.py
+# Copyright 2025 The Qwen team, Alibaba Group and the HuggingFace Inc. team. All rights reserved.
+#
+# The Transformers-derived portions are licensed under the Apache License, Version 2.0:
 # https://www.apache.org/licenses/LICENSE-2.0
 
 import torch

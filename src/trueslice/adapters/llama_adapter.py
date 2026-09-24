@@ -1,7 +1,7 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT license.
-"""
-"""
+#
+# Modified for TrueSlice by the anonymous submission authors.
 
 import torch
 from torch import FloatTensor, Tensor

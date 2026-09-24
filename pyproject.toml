@@ -1,5 +1,7 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT license.
+#
+# Modified for TrueSlice by the anonymous submission authors.
 
 [build-system]
 requires = ["setuptools>=42.0.0", "setuptools-scm"]

@@ -1,5 +1,8 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT license.
+#
+# Modified for TrueSlice by the anonymous submission authors.
+
 from __future__ import annotations
 
 import copy

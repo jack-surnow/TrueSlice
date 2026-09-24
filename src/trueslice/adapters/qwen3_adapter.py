@@ -1,10 +1,7 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT license.
 #
-# This file contains derivations from
-# https://github.com/huggingface/transformers/blob/main/src/transformers/models/qwen3/modeling_qwen3.py
-# Copyright 2022 EleutherAI and the HuggingFace Inc. team. All rights reserved.
-# https://www.apache.org/licenses/LICENSE-2.0
+# Modified for TrueSlice by the anonymous submission authors.
 
 import torch
 from torch import FloatTensor, Tensor

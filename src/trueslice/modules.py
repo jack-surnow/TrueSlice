@@ -1,6 +1,8 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT license.
 #
+# Modified for TrueSlice by the anonymous submission authors.
+#
 # This file contains derivations from
 # https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py
 # Copyright 2022 EleutherAI and the HuggingFace Inc. team. All rights reserved.

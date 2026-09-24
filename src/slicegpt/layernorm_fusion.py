@@ -1,5 +1,7 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT license.
+#
+# Modified for TrueSlice by the anonymous submission authors.
 
 import logging
 from typing import Callable, Iterable, Optional, TypeVar

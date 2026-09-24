@@ -1,5 +1,7 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT license.
+#
+# Modified for TrueSlice by the anonymous submission authors.
 
 import logging
 
@@ -188,7 +190,7 @@ def rotate_and_slice_sequential(
             args[i] = layer_adapter.get_updated_args(
                 torch.matmul(inp.to(device=config.device), Q.to(dtype=dtype))[
                     :, :, : slicing_scheduler.get_attention_input_dimension(idx)
-                ].cpu(),
+                ].to("cpu"),
                 args[i],
             )
 
@@ -236,7 +238,7 @@ def rotate_and_slice_sequential(
         slice_mlp_output(layer_adapter, slicing_scheduler.get_mlp_output_dimension(idx))
         layer.mlp_shortcut_Q = nn.Parameter(layer.mlp_shortcut_Q[:, : slicing_scheduler.get_mlp_output_dimension(idx)])
 
-        layer.to('cpu')
+        layer.to("cpu")
 
         # Run GC and cleanup GPU memory
         cleanup_memory()
@@ -305,7 +307,7 @@ def rotate_and_slice_parallel(
             args[i] = layer_adapter.get_updated_args(
                 torch.matmul(inp.to(device=config.device), Q.to(dtype=dtype))[
                     :, :, : slicing_scheduler.get_attention_input_dimension(idx)
-                ].cpu(),
+                ].to("cpu"),
                 args[i],
             )
 
@@ -319,7 +321,7 @@ def rotate_and_slice_parallel(
             out = layer(*layer_args_batch, **layer_kwargs_batch)
             if isinstance(out, tuple):
                 out = out[layer_adapter.hidden_states_output_position]
-            out = out.cpu()
+            out = out.to("cpu")
             outputs.append(out)
 
         inps = outputs
@@ -343,7 +345,7 @@ def rotate_and_slice_parallel(
             layer.attn_shortcut_Q[:, : slicing_scheduler.get_mlp_output_dimension(idx)]
         )
 
-        layer.to('cpu')
+        layer.to("cpu")
 
         # Run GC and cleanup GPU memory
         cleanup_memory()
