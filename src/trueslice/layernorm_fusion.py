@@ -188,12 +188,4 @@ def restore_norms(model_adapter: ModelAdapter, d_new) -> None:
 
     model_adapter.set_pre_head_layernorm(create_norm(d_new, standard_scale))
 
-    # This will currently alter additional norm epsilons like for the q/k norms in Qwen3 which we do not want to alter.
-    # We would to to appropriately scale the subsequent weights.
-    # restored_eps = eps * standard_scale**2
-    # for field in ("rms_norm_eps", "layer_norm_eps", "layer_norm_epsilon"):
-    #     if hasattr(config, field):
-    #         setattr(config, field, restored_eps)
-    #         break
-
     logging.info("Restoration of original norm layers complete")

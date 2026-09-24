@@ -14,3 +14,21 @@ Supported model families:
 The original tests have not yet been updated and are incompatible with both TrueSlice and the updated SliceGPT implementation. We plan to update them when time permits.
 
 Upstream copyright and license notices are retained. See `LICENSE` and the notices in individual source files.
+
+## Installation and usage
+
+From the repository root, install the package and experiment dependencies:
+
+```bash
+python -m pip install -e '.[experiment]'
+```
+
+The scripts in `research_utils` provide example configurations used during development. Before running them, adjust the model selections, output paths, and experiment settings for your environment.
+
+For example, to run the configured compression experiments:
+
+```bash
+./research_utils/slice_model.sh
+```
+
+This script may run multiple models and sparsity settings. It should be run from the repository root.
