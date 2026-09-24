@@ -8,9 +8,9 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "trueslice"
 version = "0.0.1"
-description= "My custom implementation of SliceGPT for structural pruning"
+description= "TrueSlice has been adapted from SliceGPT"
 authors = [
-    {name = "Jack Surnow"}
+    {name = "Anonymous"}
 ]
 readme = "README.md"
 requires-python = ">=3.10"

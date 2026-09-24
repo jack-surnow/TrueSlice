@@ -5,8 +5,8 @@
 BASE_PATH="/mnt/ML_Storage/TrueSlice"
 
 RUN_DENSE_PPL=0
-RUN_TRUESLICE=0
-RUN_SLICEGPT=1
+RUN_TRUESLICE=1
+RUN_SLICEGPT=0
 
 ROTATION="pca"
 
@@ -18,10 +18,10 @@ MODELS=(
     # "Qwen/Qwen3-1.7B|Qwen3-1.7B"
     # "Qwen/Qwen3-4B|Qwen3-4B"
     # "Qwen/Qwen3-8B|Qwen3-8B"
-    # "Qwen/Qwen3-14B|Qwen3-14B"
+    "Qwen/Qwen3-14B|Qwen3-14B"
 
     # "Qwen/Qwen3.5-4B|Qwen3.5-4B"
-    # "Qwen/Qwen3.5-9B|Qwen3.5-9B"
+    "Qwen/Qwen3.5-9B|Qwen3.5-9B"
 )
 
 declare -A TRUESLICE_SPARSITIES=(
@@ -40,7 +40,7 @@ declare -A TRUESLICE_SPARSITIES=(
 declare -A SLICEGPT_SPARSITIES=(
     ["meta-llama/Llama-3.2-1B"]="0.361817 0.451661 0.542969"
     ["meta-llama/Llama-3.2-3B"]="0.304688 0.387370 0.472331"
-    ["meta-llama/Llama-3.1-8B"]="0.209473 0.297364 0.387208"
+    ["meta-llama/Llama-3.1-8B"]="0.200196 0.288819 0.379151"
 
     ["Qwen/Qwen3-4B"]="0.262110 0.348438 0.436719"
     ["Qwen/Qwen3-8B"]="0.209473 0.297364 0.387208"
@@ -51,8 +51,8 @@ declare -A SLICEGPT_SPARSITIES=(
 )
 
 DATASETS=(
-    "wikitext2"
-    # "alpaca"
+    # "wikitext2"
+    "alpaca"
 )
 
 CAL_SET_SIZE=128

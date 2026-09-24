@@ -130,14 +130,8 @@ def slicing_main(args: argparse.Namespace) -> None:
         logging.info(f'Failed to initialize wandb: {e}, continuing without wandb')
         wandb.init(project=args.wandb_project, mode='disabled')
 
-    memory_allocation = {
-        0: "10GiB",    # Leave 2GB headroom on GPU 0
-        1: "10GiB",    # Leave 2GB headroom on GPU 1
-        "cpu": "64GiB" # Allocate up to 64GB of system RAM for offloaded layers
-    }
-
     model_adapter, tokenizer = hf_utils.get_model_and_tokenizer(
-        args.model, args.model_path, token=args.hf_token, dtype=config.dtype, device_map="auto", max_memory=memory_allocation
+        args.model, args.model_path, token=args.hf_token, dtype=config.dtype, device_map="auto"
     )    
 
     model = model_adapter.model

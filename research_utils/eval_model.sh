@@ -2,6 +2,8 @@
 
 # set -e
 
+BASE_PATH="/mnt/ML_Storage/TrueSlice"
+
 MODELS=(
   # "meta-llama/Llama-3.2-1B|Llama-3.2-1B"
   # "meta-llama/Llama-3.2-3B|Llama-3.2-3B"
@@ -10,10 +12,10 @@ MODELS=(
   # "Qwen/Qwen3-1.7B|Qwen3-1.7B"
   # "Qwen/Qwen3-4B|Qwen3-4B"
   # "Qwen/Qwen3-8B|Qwen3-8B"
-  # "Qwen/Qwen3-14B|Qwen3-14B"
+  "Qwen/Qwen3-14B|Qwen3-14B"
 
   # "Qwen/Qwen3.5-4B|Qwen3.5-4B"
-  "Qwen/Qwen3.5-9B|Qwen3.5-9B"
+  # "Qwen/Qwen3.5-9B|Qwen3.5-9B"
 )
 
 declare -A LOCAL_PATHS=(
@@ -23,21 +25,21 @@ declare -A LOCAL_PATHS=(
 
   ["Qwen/Qwen3-4B"]=""
   ["Qwen/Qwen3-8B"]=""
-  ["Qwen/Qwen3-14B"]="Qwen3-14B_TrueSlice_0.100000_alpaca_128 Qwen3-14B_U_TrueSlice_0.100000_alpaca_128"
-"Qwen3-14B_TrueSlice_0.100000_alpaca_128 \
-Qwen3-14B_TrueSlice_0.200000_alpaca_128 \
-Qwen3-14B_TrueSlice_0.300001_alpaca_128 \
-Qwen3-14B_U_TrueSlice_0.100000_alpaca_128 \
-Qwen3-14B_U_TrueSlice_0.200000_alpaca_128 \
-Qwen3-14B_U_TrueSlice_0.300001_alpaca_128"
+  ["Qwen/Qwen3-14B"]="Qwen3-14B_TrueSlice_0.100000_alpaca_128 Qwen3-14B_TrueSlice_0.200000_alpaca_128 Qwen3-14B_TrueSlice_0.300001_alpaca_128"
+# "Qwen3-14B_TrueSlice_0.100000_alpaca_128 \
+# Qwen3-14B_TrueSlice_0.200000_alpaca_128 \
+# Qwen3-14B_TrueSlice_0.300001_alpaca_128 \
+# Qwen3-14B_U_TrueSlice_0.100000_alpaca_128 \
+# Qwen3-14B_U_TrueSlice_0.200000_alpaca_128 \
+# Qwen3-14B_U_TrueSlice_0.300001_alpaca_128"
 
   ["Qwen/Qwen3.5-4B"]=""
   ["Qwen/Qwen3.5-9B"]="Qwen3.5-9B_TrueSlice_0.099854_wikitext2_128"
 )
 
 CAL_SETS=(
-  "wikitext2"
-  # "alpaca"
+  # "wikitext2"
+  "alpaca"
 )
 
 CAL_SET_SIZE=128
@@ -46,8 +48,6 @@ EVAL_SET_SIZE=128
 CAL_BATCH_SIZE=1
 EVAL_BATCH_SIZE=1
 DTYPE="auto"
-
-BASE_PATH="/mnt/ML_Storage/TrueSlice"
 
 for MODEL_ENTRY in "${MODELS[@]}"; do
   # Split the string into two variables using the pipe character
