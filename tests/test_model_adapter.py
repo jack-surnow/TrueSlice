@@ -73,7 +73,6 @@ class ModelAdapterTestBase(ABC):
                 _validate_protocol_attr(
                     compressed_layer, HasShortcutsSequential, f"Converted compressed layer {i} is invalid"
                 )
-            # TODO: test actual forward pass dependency on Q
 
     def test_layernorms_have_weight(self, model_adapter: ModelAdapter) -> None:
         pre_head_layernorm = model_adapter.get_pre_head_layernorm()

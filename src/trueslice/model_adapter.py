@@ -19,12 +19,11 @@ from torch.nn import Linear, Module
 from transformers import PreTrainedTokenizerBase
 
 """
-To add support for a new model, you need to create a new adapter class that inherits from ModelAdapter, and a new 
-adapter class that inherits from LayerAdapter. The ModelAdapter class tells sliceGPT how to interact with the model, 
-an instance of which is stored at self.model. For example, how to access each of the layers of the model. Similarly, 
-the LayerAdapter class tells sliceGPT how to interact with each layer of the model. For example, how to access the 
-attention and MLP components of the layer, and how to update the arguments to the layer's forward method.
-See src/slicegpt/adapters/llama_adapter.py for an example of how to implement these classes.
+Model integration interfaces for TrueSlice.
+
+Add a ModelAdapter subclass for loading and model-level access, and a LayerAdapter
+subclass for decoder components. Import the model adapter before loading a model.
+See src/trueslice/adapters/llama_adapter.py for an example.
 """
 
 
@@ -70,10 +69,7 @@ class LayerAdapter(ABC):
 
     @abstractmethod
     def get_second_layernorm(self) -> Module:
-        """
-        Returns the second layer norm in the layer, usually the one before the MLP component.
-        In the case where the layer has only one LayerNorm, should raise an exception.
-        """
+        """Return the normalization module before the MLP, or None for a shared parallel-block norm."""
         raise NotImplementedError
 
     @abstractmethod
@@ -96,10 +92,7 @@ class LayerAdapter(ABC):
 
     @abstractmethod
     def get_mlp_inputs(self) -> Sequence[Linear]:
-        """
-        Returns a list of the Linear layers (nn.modules) that are inputs to the MLP component.
-        For simple mlps, this will be a list of length 1. For gated mlps (as in the Llama models) there will be two.
-        """
+        """Return the MLP input projections, including any separate gate projection."""
         raise NotImplementedError
 
     @abstractmethod
@@ -135,7 +128,7 @@ class ModelAdapter(ABC):
     @abstractmethod
     def model(self) -> Module:
         """
-        The original model that slicegpt interacts with.
+        The original model that trueslice interacts with.
         """
         raise NotImplementedError
 

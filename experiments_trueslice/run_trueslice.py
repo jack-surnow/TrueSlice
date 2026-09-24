@@ -200,17 +200,13 @@ def slicing_main(args: argparse.Namespace) -> None:
     # Time compression only: exclude loading, data preparation, evaluation, and saving.
     computation_start = computation_timestamp()
 
-    # fuse layernorms and add rotations to skip connections
+    # fuse norms
     layernorm_fusion.fuse_modules(model_adapter)
 
     fused_param_count = sum(int(p.nelement()) for p in model.parameters())
     logging.info(f'Fused model parameters: {fused_param_count:,d}')
 
-    # compute new embedding dimension given the desired sparsity level
-    # new_embedding_dimension = int((1 - args.sparsity) * model_adapter.hidden_size)
-    # round (down) to the nearest multiple of round_interval
-    # new_embedding_dimension -= new_embedding_dimension % args.round_interval
-
+    # Round the retained residual width up to a multiple of round_interval.
     new_embedding_dimension = math.ceil(model_adapter.hidden_size * (1 - args.sparsity) / args.round_interval) * args.round_interval
 
     logging.info(

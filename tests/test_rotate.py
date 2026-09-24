@@ -26,11 +26,9 @@ def test_pca():
     x *= 0.5**0.5  # scale so that eigenvalues are 1.0
     eigen_val, eigen_vec = rotate.pca_calc([torch.unsqueeze(x, dim=0)])
 
-    # TODO: this should not be required
     eigen_val = eigen_val.to(dtype=torch.float, device='cpu')
     eigen_vec = eigen_vec.to(dtype=torch.float, device='cpu')
 
-    # TODO: these currently fail unless fix above
     assert eigen_val.device == x.device
     assert eigen_vec.device == x.device
     assert eigen_val.dtype == x.dtype
@@ -52,7 +50,6 @@ def test_pca():
     x = torch.tensor([[1, 1], [-1, -1]], dtype=torch.float, device='cpu')
     eigen_val, eigen_vec = rotate.pca_calc([torch.unsqueeze(x, dim=0)])
 
-    # TODO: this should not be required
     eigen_val = eigen_val.to(dtype=torch.float, device='cpu')
     eigen_vec = eigen_vec.to(dtype=torch.float, device='cpu')
 

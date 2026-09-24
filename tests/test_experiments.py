@@ -1,6 +1,8 @@
 """
-Tests that run and validate some of the scripts in the experiments directory, not to be used on the build machine.
-Run with `pytest -m experiment` on a GPU VM.
+Inherited SliceGPT experiment checks with legacy paths and expected results.
+
+These tests have not been updated for the current repository layout or model
+implementations and are retained for future maintenance.
 """
 import os
 import pathlib

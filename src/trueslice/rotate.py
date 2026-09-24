@@ -17,7 +17,7 @@ from .utils import cleanup_memory
 
 
 def rotate_attention_inputs(layer_adapter: LayerAdapter, Q: torch.Tensor) -> None:
-    # Rotate the WQ, WK and WV matrices of the self-attention layer.
+    # Rotate the input projections exposed by the attention or mixer adapter.
     for W in layer_adapter.get_attention_inputs():
         dtype = W.weight.dtype
         W_ = W.weight.to(device=config.device, dtype=torch.float64)
@@ -25,7 +25,7 @@ def rotate_attention_inputs(layer_adapter: LayerAdapter, Q: torch.Tensor) -> Non
 
 
 def slice_attention_inputs(layer_adapter: LayerAdapter, new_embedding_dimension: int) -> None:
-    # Slice the WQ, WK and WV matrices of the self-attention layer.
+    # Slice the residual-input columns of the attention or mixer projections.
     for W in layer_adapter.get_attention_inputs():
         W.weight.data = W.weight.data[:, :new_embedding_dimension]
         W.in_features = new_embedding_dimension
@@ -125,7 +125,10 @@ def rotate_and_slice(
     final_orientation: str = 'pca',
 ) -> None:
     """
-    Rotate and slice a model, with interleaved slicing and PCA calculations
+    Compress a fused model in place using one shared residual-stream basis.
+
+    Choose the sequential or parallel profiling path from the adapter. Both paths
+    use the first embedding width for all sliced components, including the head.
     """
     if model_adapter.parallel_blocks:
         rotate_and_slice_parallel(model_adapter, dataloader, slicing_scheduler, apply_mask, final_orientation)
@@ -142,8 +145,12 @@ def rotate_and_slice_sequential(
     final_orientation: str = 'pca',
 ) -> None:
     """
-    Rotate and slice the provided model, with interleaved slicing and PCA calculations.
-    This method works for models where the MLP block is computed after the attention block.
+    Profile sequential blocks, compute one global basis, then rotate and slice in place.
+
+    Sum trace-normalized, uncentered scatter matrices from embeddings, pre-MLP
+    residuals, and layer outputs. Use the leading eigenvectors after damping, with
+    an optional random rotation inside the retained subspace. Apply one shared
+    width to embeddings, attention, MLPs, and the head, without shortcut matrices.
     """
 
     # Set up calibration data
@@ -294,6 +301,12 @@ def rotate_and_slice_parallel(
     final_orientation: str = 'pca',
 ) -> None:
     """
+    Profile parallel blocks, compute one global basis, then rotate and slice in place.
+
+    Sum trace-normalized, uncentered scatter matrices from embeddings and layer
+    outputs. Use the leading eigenvectors after damping, with an optional random
+    rotation inside the retained subspace. Apply one shared width throughout the
+    model, including the head, without shortcut matrices.
     """
 
     # Set up calibration data

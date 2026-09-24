@@ -79,6 +79,11 @@ def get_model_and_tokenizer(
     token: str | bool | None = None,
 ) -> tuple[ModelAdapter, PreTrainedTokenizerBase]:
     """
+    Load pretrained weights and a tokenizer, returning a TrueSlice adapter and tokenizer.
+
+    Use model_path for a local model, otherwise load model_name from Hugging Face.
+    Set evaluation mode, disable caching, and run the adapter setup hook. The model
+    family adapter must already be imported.
     """
     local_model = model_path is not None
 

@@ -362,10 +362,6 @@ def rotate_and_slice_parallel(
 
 @torch.no_grad()
 def rotate(model_adapter: ModelAdapter, dataloader: torch.utils.data.DataLoader[torch.Tensor]) -> None:
-    """
-    Rotate a model.
-    TODO: Make this gpu memory efficient.
-    """
     model_adapter.model.eval()
     dtype = next(iter(model_adapter.model.parameters())).dtype  # Get the dtype of the model.
 
@@ -428,9 +424,6 @@ def rotate(model_adapter: ModelAdapter, dataloader: torch.utils.data.DataLoader[
 
 
 def slice_rotated_model(model_adapter: ModelAdapter, slicing_scheduler: SlicingScheduler | None = None) -> None:
-    """
-    TODO: Make this gpu memory efficient.
-    """
     model_adapter.model.eval()
     layers = model_adapter.get_layers()
     if not slicing_scheduler:

@@ -73,9 +73,11 @@ def get_layer0_inputs(model_adapter: ModelAdapter, batch: dict[str, Tensor]) -> 
 def get_signals_sequential(
     layer_adapter: LayerAdapter, layer_args: list[tuple], layer_kwargs: list[dict[str, Any]]
 ) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
-    """
-    Take the input signals ("activations") for a layer, run the layer forward.
-    Return the output of the layer (not layernormed) and the input to the MLP (pre-layernorm).
+    """Run calibration batches through a sequential decoder.
+
+    Return two lists in order: inputs to the MLP normalization, then decoder outputs.
+    Captured tensors are detached copies on the CPU; the layer must already be placed
+    on the calibration device.
     """
     mlp_ln_inputs = []
     outputs = []
@@ -115,9 +117,10 @@ def get_signals_sequential(
 def get_signals_parallel(
     layer_adapter: LayerAdapter, layer_args: list[tuple], layer_kwargs: list[dict[str, Any]]
 ) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
-    """
-    Take the input signals ("activations") for a layer, run the layer forward.
-    Return the output of the layer (not layernormed) and the input to the MLP (pre-layernorm).
+    """Run calibration batches through a parallel decoder and return its outputs.
+
+    Return one list of detached CPU tensors. The layer must already be placed on
+    the calibration device.
     """
     outputs = []
 

@@ -1,4 +1,5 @@
-"""Parameter budgets for residual-stream slicing (no checkpoint downloads).
+"""
+Parameter budgets for residual-stream slicing (no checkpoint downloads).
 
 Qwen3.5 presets describe the dense text models used by TrueSlice, not the vision
 encoder or MTP training weights. Linear attention here means Qwen3.5 Gated DeltaNet.
@@ -78,9 +79,6 @@ models = {
         "num_layers": 64, "num_q_heads": 40, "num_kv_heads": 8, "head_dim": 128,
         "mlp_type": "gated", "tied": False, "norm_type": "rmsnorm", "qk_norms": True,
     },
-
-    # Official text configs, checked 2026-09-21:
-    # https://huggingface.co/Qwen/Qwen3.5-4B/blob/main/config.json
     "qwen3.5-4B": {
         "vocab_size": 248320, "hidden_dim": 2560, "intermediate_dim": 9216,
         "num_layers": 32, "num_q_heads": 16, "num_kv_heads": 4, "head_dim": 256,
@@ -91,7 +89,6 @@ models = {
         "linear_num_value_heads": 32, "linear_value_head_dim": 128,
         "linear_conv_kernel_dim": 4,
     },
-    # https://huggingface.co/Qwen/Qwen3.5-9B/blob/main/config.json
     "qwen3.5-9B": {
         "vocab_size": 248320, "hidden_dim": 4096, "intermediate_dim": 12288,
         "num_layers": 32, "num_q_heads": 16, "num_kv_heads": 4, "head_dim": 256,
@@ -309,8 +306,12 @@ def calc_slicegpt_params(config, d_model, d_new):
 
 def find_optimal_sparsities(config, global_target_sparsity, dense_param_count, block_size=1):
     """
-    Uses binary search to find the closest dimension that yields a parameter 
-    count >= the global target, drastically reducing calculation overhead.
+    Find aligned widths that meet a target parameter budget and match the two methods.
+
+    First choose the smallest TrueSlice width at or above the rounded target count.
+    Then choose the smallest SliceGPT width at or above that TrueSlice count. Return
+    widths, estimated counts, input sparsities, and actual reductions; raise ValueError
+    if either budget cannot be reached. Matching is approximate because widths are discrete.
     """
     d_model = config["hidden_dim"]
     if not isinstance(block_size, int) or not 1 <= block_size <= d_model:
