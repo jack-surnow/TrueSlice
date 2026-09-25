@@ -28,7 +28,7 @@ The scripts in `research_utils` provide example configurations used during devel
 For example, to run the configured compression experiments:
 
 ```bash
-./research_utils/slice_model.sh
+bash research_utils/slice_model.sh
 ```
 
 This script may run multiple models and sparsity settings. It should be run from the repository root.

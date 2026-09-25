@@ -76,7 +76,7 @@ models = {
     },
     "qwen3-32b": {
         "vocab_size": 151936, "hidden_dim": 5120, "intermediate_dim": 25600,
-        "num_layers": 64, "num_q_heads": 40, "num_kv_heads": 8, "head_dim": 128,
+        "num_layers": 64, "num_q_heads": 64, "num_kv_heads": 8, "head_dim": 128,
         "mlp_type": "gated", "tied": False, "norm_type": "rmsnorm", "qk_norms": True,
     },
     "qwen3.5-4B": {
