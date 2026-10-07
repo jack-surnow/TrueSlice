@@ -1,7 +1,7 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT license.
 #
-# Modified for TrueSlice by the anonymous submission authors.
+# Modified for TrueSlice.
 # Adapted to support Qwen3 and residual rotation shortcuts.
 #
 # Additional notice retained from the inherited adapter code:

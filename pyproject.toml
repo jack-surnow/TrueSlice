@@ -1,7 +1,7 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT license.
 #
-# Modified for TrueSlice by the anonymous submission authors.
+# Modified for TrueSlice.
 
 [build-system]
 requires = ["setuptools>=42.0.0", "setuptools-scm"]
@@ -12,7 +12,7 @@ name = "trueslice"
 version = "0.0.1"
 description= "TrueSlice has been adapted from SliceGPT"
 authors = [
-    {name = "Anonymous"}
+    {name = "Jack Surnow"}
 ]
 readme = "README.md"
 requires-python = ">=3.10"

@@ -3,7 +3,7 @@
 ##
 ## Get latest from https://github.com/github/gitignore/blob/main/VisualStudio.gitignore
 #
-# Modified for TrueSlice by the anonymous submission authors.
+# Modified for TrueSlice.
 
 experiments/results*
 experiments/sliced_models

@@ -1,7 +1,7 @@
 # coding=utf-8
 # Copyright 2024 Microsoft and the HuggingFace Inc. team. All rights reserved.
 #
-# Modified for TrueSlice by the anonymous submission authors.
+# Modified for TrueSlice.
 
 import torch
 from torch import FloatTensor, Tensor

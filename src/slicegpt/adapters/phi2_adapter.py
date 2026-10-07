@@ -1,7 +1,7 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT license.
 #
-# Modified for TrueSlice by the anonymous submission authors.
+# Modified for TrueSlice.
 #
 # This file contains derivations from
 # https://github.com/huggingface/transformers/blob/main/src/transformers/models/phi/modeling_phi.py
