@@ -42,10 +42,8 @@ CAL_SETS=(
   "alpaca"
 )
 
-CAL_SET_SIZE=128
 EVAL_SET_SIZE=128
 
-CAL_BATCH_SIZE=1
 EVAL_BATCH_SIZE=1
 DTYPE="auto"
 
@@ -65,23 +63,20 @@ for MODEL_ENTRY in "${MODELS[@]}"; do
     for LOCAL_PATH in "${LOCAL_PATHS_LIST[@]}"; do
       echo "======================================================================"
       echo "Running Perplexity Eval for ${MODEL_NAME}: ${LOCAL_PATH}"
-      echo "Calibration Dataset: ${CAL_SET}"
+      echo "Evaluation Dataset: ${CAL_SET}"
       echo "======================================================================"
 
-      python experiments_trueslice/run_eval.py \
+      python experiments/trueslice/run_trueslice.py \
         --model "${MODEL_ID}" \
         --model-path "${BASE_PATH}/${LOCAL_PATH}" \
-        --ppl-only \
-        --cal-dataset "${CAL_SET}" \
-        --cal-nsamples "${CAL_SET_SIZE}" \
-        --cal-batch-size "${CAL_BATCH_SIZE}" \
-        --cal-max-seqlen 2048 \
+        --eval-only \
+        --dataset "${CAL_SET}" \
         --seed 42 \
-        --ppl-eval-seqlen 2048 \
-        --ppl-eval-batch-size "${EVAL_BATCH_SIZE}" \
-        --ppl-eval-nsamples "${EVAL_SET_SIZE}" \
+        --eval-seqlen 2048 \
+        --eval-batch-size "${EVAL_BATCH_SIZE}" \
+        --eval-nsamples "${EVAL_SET_SIZE}" \
         --dtype "${DTYPE}" \
-        --distribute-model \
+        --eval-device-map auto \
         --no-wandb
     done
   done

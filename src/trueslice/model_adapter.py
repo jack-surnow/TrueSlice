@@ -5,12 +5,9 @@
 
 from __future__ import annotations
 
-import copy
 import inspect
-import json
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
-from dataclasses import asdict, dataclass, field
 from typing import Any
 
 import torch
@@ -120,9 +117,6 @@ class ModelAdapter(ABC):
     parallel_blocks = False
     should_bake_mean_into_linear = False
     layernorm_weight_offset = 0.0
-
-    def __init__(self):
-        self.slicing_conf: SlicingConfig | None = None
 
     @property
     @abstractmethod
@@ -279,8 +273,9 @@ class ModelAdapter(ABC):
         model_name: str,
         model_path: str,
         *,
-        device_map: str | dict[str, int] | None = "cpu",
-        max_memory: dict[str, int] | None = None,
+        device_map: str | dict[str, str | int | torch.device] | None = "cpu",
+        max_memory: dict[str | int, str | int] | None = None,
+        offload_folder: str | None = None,
         dtype: torch.dtype = torch.float16,
         local_files_only: bool = False,
         token: str | bool | None = None,
@@ -320,6 +315,7 @@ class ModelAdapter(ABC):
                 model_path=model_path,
                 device_map=device_map,
                 max_memory=max_memory,
+                offload_folder=offload_folder,
                 dtype=dtype,
                 local_files_only=local_files_only,
                 token=token,
@@ -339,8 +335,9 @@ class ModelAdapter(ABC):
         model_name: str,
         model_path: str,
         *,
-        device_map: str | dict[str, int] | None = "cpu",
-        max_memory: dict[str, int] | None = None,
+        device_map: str | dict[str, str | int | torch.device] | None = "cpu",
+        max_memory: dict[str | int, str | int] | None = None,
+        offload_folder: str | None = None,
         dtype: torch.dtype = torch.float16,
         local_files_only: bool = False,
         token: str | bool | None = None,
@@ -351,64 +348,3 @@ class ModelAdapter(ABC):
         See `from_model` for more details.
         """
         raise NotImplementedError
-
-
-@dataclass
-class SlicingConfig:
-    """Slicing configuration such as individual layer dimensions and whether to slice head."""
-
-    hidden_size: int = 0
-    layers_num: int = 0
-    do_slice_head: bool = False
-    parallel_blocks: bool = False
-
-    # use dict[int, int] instead of list[int] to allow for arbitrary order updates and default dicts
-    embedding_dimensions: dict[int, int] = field(default_factory=dict)
-
-    attention_input_dimensions: dict[int, int] = field(default_factory=dict)
-    attention_output_dimensions: dict[int, int] = field(default_factory=dict)
-
-    mlp_input_dimensions: dict[int, int] = field(default_factory=dict)
-    mlp_output_dimensions: dict[int, int] = field(default_factory=dict)
-
-    head_dimension: int | None = None
-
-    const_dimension: int | None = None  # to be able to load models without config, sliced with const sparsity
-
-    @staticmethod
-    def from_dict(d: dict) -> 'SlicingConfig':
-        """Return a SliceConfig object constructed from the provided dictionary."""
-
-        def convert_dict_keys_to_int(d: Any) -> Any:
-            # recursively convert all numeric string keys to int
-            if not isinstance(d, dict):
-                return d
-
-            if all(isinstance(k, str) and k.isnumeric() for k in d.keys()):
-                d = {int(k): v for k, v in d.items()}
-            else:
-                d = {k: convert_dict_keys_to_int(v) for k, v in d.items()}
-
-            return d
-
-        return SlicingConfig(**convert_dict_keys_to_int(d))
-
-    @staticmethod
-    def from_json_string(json_str: str) -> 'SlicingConfig':
-        """Return a SliceConfig object constructed from the provided JSON string."""
-        return SlicingConfig.from_dict(json.loads(json_str))
-
-    def to_dict(self) -> dict:
-        """Return a dictionary representation of this object."""
-        # workaround until 'dataclasses.asdict support defaultdict fields #32056' is in the Python release used
-        self.embedding_dimensions = {k: v for k, v in self.embedding_dimensions.items()}
-
-        return asdict(self)
-
-    def to_json_string(self) -> str:
-        """Return a JSON representation of this object."""
-        return json.dumps(self.to_dict())
-
-    def clone(self) -> 'SlicingConfig':
-        """Return a clone of this object."""
-        return copy.deepcopy(self)

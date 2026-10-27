@@ -19,7 +19,7 @@ requires-python = ">=3.10"
 license = {text = "MIT"}
 dependencies = [
     "accelerate",
-    "datasets==2.18.0",
+    "datasets>=4.0.0,<5",
     "ml-collections",
     "numpy",
     "torch",
@@ -36,7 +36,7 @@ dev = [
 ]
 
 experiment = [
-    "lm-eval==0.4.1",
+    "lm-eval[hf,ifeval]==0.4.11",
     "wandb",
 ]
 

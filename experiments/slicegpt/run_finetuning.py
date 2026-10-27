@@ -11,7 +11,7 @@ import syne_tune
 import torch
 import transformers
 import wandb
-from bo_options import lora_target_map
+from experiments.slicegpt.bo_options import lora_target_map
 from peft import LoraConfig, TaskType, get_peft_model
 from syne_tune import Reporter
 from torch.utils.data import DataLoader

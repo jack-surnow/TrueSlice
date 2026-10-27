@@ -7,11 +7,14 @@ import logging
 
 import datasets
 import torch
-from torch.utils.data import DataLoader, Dataset, SubsetRandomSampler
+from torch.utils.data import DataLoader, Dataset, Subset, SubsetRandomSampler
 from transformers import PreTrainedTokenizerBase
 
 
-def get_dataset(name: str) -> datasets.DatasetDict:
+def get_dataset(name: str,
+    *,
+    seed: int = 42,
+) -> datasets.DatasetDict:
     """
     Get the dataset from the HuggingFace datasets library.
 
@@ -52,9 +55,9 @@ def get_dataset(name: str) -> datasets.DatasetDict:
 
     # if alpaca, create a test and validation set from the training set
     if name == "alpaca":
-        ds = ds["train"].train_test_split(test_size=0.2, seed=42)
+        ds = ds["train"].train_test_split(test_size=0.2, seed=seed)
         temp_ds = ds.pop("test")
-        temp_ds = temp_ds.train_test_split(test_size=0.5, seed=42)
+        temp_ds = temp_ds.train_test_split(test_size=0.5, seed=seed)
         ds["test"] = temp_ds["train"]
         ds["validation"] = temp_ds["test"]
 
@@ -62,53 +65,7 @@ def get_dataset(name: str) -> datasets.DatasetDict:
     return ds
 
 
-def prepare_test_dataloader(
-    dataset: datasets.Dataset, tokenizer: PreTrainedTokenizerBase, seqlen: int = 2048, batch_size: int = 1
-) -> DataLoader[dict[str, torch.Tensor]]:
-    """
-    Get a DataLoader from a test dataset. This dataloader should be used when comparing WikiText2 perplexities with other papers, e.g. SparseGPT (arxiv.org/abs/2301.00774).
-
-    Args:
-        dataset: The dataset to create a dataloader from.
-        tokenizer: The tokenizer to use.
-        seqlen: The sequence length of sequences in the dataset.
-        batch_size: The batch size.
-
-    Returns:
-        A DataLoader.
-    """
-
-    logging.info(f"Preparing test dataloader")
-
-    class TestDataset(Dataset):
-        def __init__(self, ds, tokenizer, seqlen=2048):
-            """Tokenize the entire dataset and reshape it into sequences of length seqlen."""
-
-            text_column = 'text' if 'text' in ds.column_names else 'sentence'
-            tokenized_ds = tokenizer("\n\n".join(ds[text_column]), return_tensors='pt')
-            nsamples = tokenized_ds.input_ids.numel() // seqlen
-
-            input_ids = tokenized_ds.input_ids[0, : nsamples * seqlen]
-            input_ids = input_ids.reshape(nsamples, seqlen)
-            attn_mask = tokenized_ds.attention_mask[0, : nsamples * seqlen]
-            attn_mask = attn_mask.reshape(nsamples, seqlen)
-
-            self.input_ids = input_ids
-            self.attn_mask = attn_mask
-
-        def __getitem__(self, idx):
-            return {"input_ids": self.input_ids[idx], "attention_mask": self.attn_mask[idx]}
-
-        def __len__(self):
-            return len(self.input_ids)
-
-    test_ds = TestDataset(dataset, tokenizer, seqlen)
-    loader = DataLoader(test_ds, batch_size=batch_size)
-    logging.info(f"Preparing test dataloader done")
-    return loader
-
-
-def prepare_dataloader(
+def prepare_train_dataloader(
     dataset: datasets.Dataset,
     tokenizer: PreTrainedTokenizerBase,
     max_seqlen: int = 2048,
@@ -152,11 +109,11 @@ def prepare_dataloader(
         data_list = ds[data_name]
         new_data_list = []
 
-        torch.manual_seed(seed)
+        generator = torch.Generator().manual_seed(seed)
         indices = list(range(len(data_list)))
 
         while len(new_data_list) < nsamples and len(indices) > 0:
-            start_idx = torch.randint(0, len(indices), (1,)).item()
+            start_idx = torch.randint(0, len(indices), (1,), generator=generator).item()
             idx = start_idx
             tokens = []
             while len(tokens) < max_seqlen and idx < len(indices):
@@ -195,9 +152,80 @@ def prepare_dataloader(
     # tokenize lazily
     ds.set_transform(tokenize)
 
-    torch.manual_seed(seed)
-    sampler = SubsetRandomSampler(torch.randperm(len(ds))[:nsamples])
+    # Keep sampling and batch order independent of model initialization, optional
+    # evaluations, and other consumers of the global random number generator.
+    generator = torch.Generator().manual_seed(seed)
+    sampler = SubsetRandomSampler(torch.randperm(len(ds), generator=generator)[:nsamples], generator=generator)
 
-    loader = DataLoader(ds, batch_size=batch_size, sampler=sampler)
+    loader = DataLoader(ds, batch_size=batch_size, sampler=sampler, generator=generator)
     logging.info(f"Preparing dataloader done")
+    return loader
+
+
+def prepare_test_dataloader(
+    dataset: datasets.Dataset,
+    tokenizer: PreTrainedTokenizerBase,
+    seqlen: int = 2048,
+    batch_size: int = 1,
+    *,
+    nsamples: int | None = None,
+    seed: int = 42,
+) -> DataLoader[dict[str, torch.Tensor]]:
+    """
+    Pack the test corpus into full sequences and optionally select a seeded subset.
+
+    With nsamples=None, evaluate the full packed corpus for standard perplexity
+    comparisons. A positive nsamples caps the number of sequences, not batches.
+
+    Args:
+        dataset: The dataset to create a dataloader from.
+        tokenizer: The tokenizer to use.
+        seqlen: The sequence length of sequences in the dataset.
+        batch_size: The batch size.
+        nsamples: Maximum number of full sequences, or None for the whole corpus.
+        seed: Seed for selecting evaluation sequences.
+
+    Returns:
+        A DataLoader.
+    """
+
+    logging.info(f"Preparing test dataloader")
+
+    class TestDataset(Dataset):
+        def __init__(self, ds, tokenizer, seqlen=2048):
+            """Tokenize the entire dataset and reshape it into sequences of length seqlen."""
+
+            text_column = 'text' if 'text' in ds.column_names else 'sentence'
+            tokenized_ds = tokenizer("\n\n".join(ds[text_column]), return_tensors='pt')
+            nsamples = tokenized_ds.input_ids.numel() // seqlen
+
+            input_ids = tokenized_ds.input_ids[0, : nsamples * seqlen]
+            input_ids = input_ids.reshape(nsamples, seqlen)
+            attn_mask = tokenized_ds.attention_mask[0, : nsamples * seqlen]
+            attn_mask = attn_mask.reshape(nsamples, seqlen)
+
+            self.input_ids = input_ids
+            self.attn_mask = attn_mask
+
+        def __getitem__(self, idx):
+            return {"input_ids": self.input_ids[idx], "attention_mask": self.attn_mask[idx]}
+
+        def __len__(self):
+            return len(self.input_ids)
+
+    test_ds = TestDataset(dataset, tokenizer, seqlen)
+    if not len(test_ds):
+        raise ValueError("Evaluation dataset is too short to produce one full sequence")
+
+    generator = torch.Generator().manual_seed(seed)
+    if nsamples is not None:
+        if nsamples < len(test_ds):
+            indices = torch.randperm(len(test_ds), generator=generator)[:nsamples].tolist()
+            test_ds = Subset(test_ds, indices)
+        elif nsamples > len(test_ds):
+            logging.warning("Requested %d evaluation sequences; only %d are available", nsamples, len(test_ds))
+
+    loader = DataLoader(test_ds, batch_size=batch_size, generator=generator)
+    logging.info("Evaluation uses %d sequences of %d tokens", len(test_ds), seqlen)
+    logging.info(f"Preparing test dataloader done")
     return loader

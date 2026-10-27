@@ -9,14 +9,13 @@ import time
 
 import numpy as np
 import torch
-from accelerate import dispatch_model, infer_auto_device_map
-from accelerate.utils import get_balanced_memory
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from . import utils
 from .config import config
 from .model_adapter import ModelAdapter
+from .mapping import Mapping
 
 
 @torch.no_grad()
@@ -27,7 +26,7 @@ def evaluate_ppl(
     device: torch.device | str | None = None,
 ) -> float:
     """
-    Evaluate the model's perplexity on the test set using batch processing.
+    Evaluate token-weighted perplexity, excluding padding using attention masks.
     It is expected that model is already on the correct device.
     """
     sync_gpus()
@@ -37,34 +36,43 @@ def evaluate_ppl(
     model.eval()
 
     if device is None:
-        device = config.device
+        device = Mapping.input_device(model)
 
-    if pad_token_id:
-        loss_fn = torch.nn.CrossEntropyLoss(reduction="none", ignore_index=pad_token_id)
-    else:
-        loss_fn = torch.nn.CrossEntropyLoss(reduction="none")
-
-    nlls = []
+    total_nll = torch.zeros((), dtype=torch.float64)
+    total_tokens = 0
 
     logging.info("Evaluating perplexity...")
-    for batch in testloader:
-        logging.debug(f"Evaluating batch {len(nlls)}")
+    for index, batch in enumerate(testloader):
+        logging.debug(f"Evaluating batch {index}")
         batch = utils.map_tensors(batch, device)
-        logits = model(**batch).logits
+        logits = model(**{k: v for k, v in batch.items() if k != "labels"}, use_cache=False).logits
 
-        # shift outputs and labels autoregressively.
-        logits = logits[:, :-1, :]
-        shift_labels = batch["input_ids"][:, 1:]
+        # A real EOS must still count when the tokenizer also uses it for padding.
+        valid = batch.get("attention_mask")
+        if valid is None:
+            valid = (batch["input_ids"] != pad_token_id) if pad_token_id is not None else torch.ones_like(batch["input_ids"])
+        valid = valid.to(device=logits.device, dtype=torch.bool)
+        mask = valid[:, :-1] & valid[:, 1:]
+        shift_labels = batch["input_ids"][:, 1:].to(logits.device)
+        shift_labels = shift_labels.masked_fill(~mask, -100)
 
-        # CrossEntropyLoss demands data dimension is dimension 1.
-        nll = loss_fn(logits.permute(0, 2, 1), shift_labels).float()
+        # Upcast BEFORE cross entropy. Chunk by token to avoid a full FP32 copy
+        # of [batch, sequence, vocabulary] logits for large-vocabulary models.
+        batch_nll = torch.zeros((), dtype=torch.float64, device=logits.device)
+        for row in range(logits.shape[0]):
+            for start in range(0, shift_labels.shape[1], 256):
+                stop = min(start + 256, shift_labels.shape[1])
+                losses = torch.nn.functional.cross_entropy(
+                    logits[row, start:stop].float(), shift_labels[row, start:stop], reduction="none",
+                )
+                batch_nll += losses.double().sum()
+        total_nll += batch_nll.cpu()
+        total_tokens += mask.sum().item()
+        del logits
 
-        mask = shift_labels != loss_fn.ignore_index
-        nll_means = (nll * mask).sum(dim=1) / mask.sum(dim=1)
-        nlls.append(nll_means)
-
-    nlls_tensor = torch.cat(nlls)
-    ppl = torch.exp(nlls_tensor.mean())
+    if total_tokens == 0:
+        raise ValueError("Perplexity evaluation requires at least one valid next-token target; no tokens were scored")
+    ppl = torch.exp(total_nll / total_tokens)
 
     sync_gpus()
 
@@ -75,30 +83,6 @@ def evaluate_ppl(
     )
 
     return ppl.item()
-
-
-def distribute_model(model_adapter: ModelAdapter) -> None:
-    """Distribute the model across available GPUs."""
-    model = model_adapter.model
-    max_memory = get_balanced_memory(
-        model,
-        no_split_module_classes=model_adapter.no_split_module_classes,
-    )
-
-    device_map = infer_auto_device_map(
-        model, max_memory=max_memory, no_split_module_classes=model_adapter.no_split_module_classes
-    )
-
-    dispatch_model(
-        model,
-        device_map=device_map,
-        offload_buffers=True,
-        offload_dir="offload",
-        state_dict=model.state_dict(),
-    )
-
-    # Run GC and cleanup GPU memory
-    utils.cleanup_memory()
 
 
 def sync_gpus() -> None:

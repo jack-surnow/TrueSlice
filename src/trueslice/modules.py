@@ -24,7 +24,7 @@ class RMSN(torch.nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         input_dtype = x.dtype
-        if x.dtype == torch.float16:
+        if x.dtype in (torch.float16, torch.bfloat16):
             x = x.to(torch.float32)
         variance = x.pow(2).sum(-1, keepdim=True) / self.mean_dim
         x = x * torch.rsqrt(variance + self.eps)

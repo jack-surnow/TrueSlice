@@ -46,6 +46,10 @@ def configure_logging(
         level=logging.NOTSET,
     )
 
+    # Keep HTTP warnings/errors visible without logging every Hub request/redirect.
+    for name in ('httpx', 'httpcore'):
+        logging.getLogger(name).setLevel(logging.WARNING)
+
 
 def cleanup_memory() -> None:
     """Run GC and clear GPU memory."""
@@ -76,16 +80,19 @@ T = TypeVar('T')
 
 
 def map_tensors(obj: T, device: torch.device | str | None = None, dtype: torch.dtype | None = None) -> T:
-    """Recursively map tensors to device and dtype."""
-    if isinstance(obj, torch.Tensor):
-        if device is not None:
-            obj = obj.to(device=device)
-        if dtype is not None:
-            obj = obj.to(dtype=dtype)
-        return obj
-    elif isinstance(obj, (list, tuple)):
-        return type(obj)(map_tensors(x, device, dtype) for x in obj)
-    elif isinstance(obj, dict):
-        return {k: map_tensors(v, device, dtype) for k, v in obj.items()}  # type: ignore
-    else:
-        return obj
+    """Recursively transfer tensors, preserving repeated references within obj."""
+    tensors = {}
+
+    def transfer(value):
+        if isinstance(value, torch.Tensor):
+            key = id(value)
+            if key not in tensors:
+                tensors[key] = value.to(device=device, dtype=dtype)
+            return tensors[key]
+        if isinstance(value, (list, tuple)):
+            return type(value)(transfer(item) for item in value)
+        if isinstance(value, dict):
+            return {key: transfer(item) for key, item in value.items()}
+        return value
+
+    return transfer(obj)

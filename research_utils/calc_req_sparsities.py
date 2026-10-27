@@ -79,6 +79,16 @@ models = {
         "num_layers": 64, "num_q_heads": 64, "num_kv_heads": 8, "head_dim": 128,
         "mlp_type": "gated", "tied": False, "norm_type": "rmsnorm", "qk_norms": True,
     },
+    "qwen3.5-2B": {
+        "vocab_size": 248320, "hidden_dim": 2048, "intermediate_dim": 6144,
+        "num_layers": 24, "num_q_heads": 8, "num_kv_heads": 2, "head_dim": 256,
+        "mlp_type": "gated", "tied": True, "norm_type": "rmsnorm", "qk_norms": True,
+        "attn_output_gate": True,
+        "layer_types": ["linear_attention", "linear_attention", "linear_attention", "full_attention"] * 6,
+        "linear_num_key_heads": 16, "linear_key_head_dim": 128,
+        "linear_num_value_heads": 16, "linear_value_head_dim": 128,
+        "linear_conv_kernel_dim": 4,
+    },
     "qwen3.5-4B": {
         "vocab_size": 248320, "hidden_dim": 2560, "intermediate_dim": 9216,
         "num_layers": 32, "num_q_heads": 16, "num_kv_heads": 4, "head_dim": 256,

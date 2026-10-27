@@ -138,7 +138,7 @@ def benchmarking_main(args: argparse.Namespace) -> None:
         raise ValueError(f"prompt-tokens + ntokens exceeds the model context length ({model_adapter.seqlen})")
 
     dataset = data_utils.get_dataset(args.eval_dataset)
-    train_loader = data_utils.prepare_dataloader(
+    train_loader = data_utils.prepare_train_dataloader(
         dataset=dataset["train"],
         tokenizer=tokenizer,
         max_seqlen=sequence_length,

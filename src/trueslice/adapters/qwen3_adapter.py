@@ -147,8 +147,9 @@ class Qwen3ModelAdapter(ModelAdapter):
         model_name: str,
         model_path: str,
         *,
-        device_map: str | dict[str, int] | None = "cpu",
-        max_memory: dict[str, int] | None = None,
+        device_map: str | dict[str, str | int | torch.device] | None = "cpu",
+        max_memory: dict[str | int, str | int] | None = None,
+        offload_folder: str | None = None,
         dtype: torch.dtype = torch.float16,
         local_files_only: bool = False,
         token: str | bool | None = None,
@@ -157,9 +158,9 @@ class Qwen3ModelAdapter(ModelAdapter):
             return None
 
         model = Qwen3ForCausalLM.from_pretrained(
-            model_path, torch_dtype=dtype, token=token, local_files_only=local_files_only, device_map=device_map, max_memory=max_memory
+            model_path, dtype=dtype, token=token, local_files_only=local_files_only, device_map=device_map, max_memory=max_memory, offload_folder=offload_folder
         )
-        model.config.torch_dtype = dtype
+        model.config.dtype = dtype
 
         return cls(model)
 

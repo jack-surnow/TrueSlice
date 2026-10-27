@@ -67,6 +67,7 @@ def fuse_modules(model_adapter: ModelAdapter) -> None:
     # make a copy of the weights in the lm head, which are shared with embeddings...
     head = model_adapter.get_lm_head()
     head.weight = Parameter(head.weight.clone().detach())
+    model_adapter.model.config.tie_word_embeddings = False
 
     # We add the mean subtraction to the first embeddings
     if model_adapter.should_bake_mean_into_linear:
@@ -144,15 +145,16 @@ def fuse_ln_linear(layernorm: Module, linear_layers: Iterable[Linear], weight_of
 
         # Calculating new weight and bias
         W_ = linear.weight.data.double()
-        linear.weight.data = (W_ * (layernorm.weight.double() + weight_offset)).to(linear_dtype)
+        linear.weight.data = (W_ * (layernorm.weight.to(device=W_.device, dtype=torch.float64) + weight_offset)).to(linear_dtype)
 
         if hasattr(layernorm, 'bias'):
             if linear.bias is None:
-                linear.bias = Parameter(torch.zeros(linear.out_features, dtype=torch.float64))
-            linear.bias.data = linear.bias.data.double() + torch.matmul(W_, layernorm.bias.double())
+                linear.bias = Parameter(torch.zeros(linear.out_features, dtype=torch.float64, device=W_.device))
+            linear.bias.data = linear.bias.data.double() + torch.matmul(W_, layernorm.bias.to(device=W_.device, dtype=torch.float64))
             linear.bias.data = linear.bias.data.to(linear_dtype)
 
 
+@torch.no_grad()
 def restore_norms(model_adapter: ModelAdapter, d_new) -> None:
     logging.info("Restoring original norm layers with identity parameters")
     
@@ -166,14 +168,31 @@ def restore_norms(model_adapter: ModelAdapter, d_new) -> None:
           getattr(config, "layer_norm_epsilon", 1e-5)))
 
     d_original = model_adapter.hidden_size
-    standard_scale = math.sqrt(d_original / d_new)
+    gain_scale = math.sqrt(d_original / d_new)
+    restored_eps = eps * gain_scale ** 2
 
-    def create_norm(dim: int,scale_factor: float) -> nn.Module:
-        norm_layer = model_adapter.original_layer_norm_type(dim, eps=eps * (scale_factor ** 2)).to(device=target_device, dtype=target_dtype)
+    if not issubclass(model_adapter.original_layer_norm_type, nn.LayerNorm):
+        # Scale the residual stream by sqrt(d_new / d_original), so native
+        # RMSNorm's mean uses the same denominator as the fused RMSN. Its gain
+        # cancels this scale. Keeping the original epsilon makes standard HF
+        # reloads exact without changing the epsilon of internal Q/K norms.
+        residual_scale = 1 / gain_scale
+        if residual_scale != 1:
+            for embedding in model_adapter.get_embeddings():
+                embedding.weight.mul_(residual_scale)
+            for layer_adapter in model_adapter.get_layers():
+                for output in (layer_adapter.get_attention_output(), layer_adapter.get_mlp_output()):
+                    output.weight.mul_(residual_scale)
+                    if output.bias is not None:
+                        output.bias.mul_(residual_scale)
+        restored_eps = eps
+
+    def create_norm() -> nn.Module:
+        norm_layer = model_adapter.original_layer_norm_type(d_new, eps=restored_eps).to(device=target_device, dtype=target_dtype)
 
         if hasattr(norm_layer, 'weight') and norm_layer.weight is not None:
             # Qwen3.5 applies (1 + weight); ordinary RMSNorm applies weight.
-            nn.init.constant_(norm_layer.weight, scale_factor - model_adapter.layernorm_weight_offset)
+            nn.init.constant_(norm_layer.weight, gain_scale - model_adapter.layernorm_weight_offset)
 
         if hasattr(norm_layer, 'bias') and norm_layer.bias is not None:
             nn.init.zeros_(norm_layer.bias)
@@ -181,11 +200,11 @@ def restore_norms(model_adapter: ModelAdapter, d_new) -> None:
         return norm_layer
 
     for layer_adapter in model_adapter.get_layers():
-        layer_adapter.set_first_layernorm(create_norm(d_new, standard_scale)) 
+        layer_adapter.set_first_layernorm(create_norm()) 
 
         if not model_adapter.parallel_blocks:
-            layer_adapter.set_second_layernorm(create_norm(d_new, standard_scale))
+            layer_adapter.set_second_layernorm(create_norm())
 
-    model_adapter.set_pre_head_layernorm(create_norm(d_new, standard_scale))
+    model_adapter.set_pre_head_layernorm(create_norm())
 
     logging.info("Restoration of original norm layers complete")

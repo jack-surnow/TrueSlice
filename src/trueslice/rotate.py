@@ -3,6 +3,7 @@
 #
 # Modified for TrueSlice.
 
+import copy
 import logging
 
 import numpy as np
@@ -11,23 +12,24 @@ from tqdm import tqdm
 
 from .config import config
 from .model_adapter import LayerAdapter, ModelAdapter
-from .model_utils import get_layer0_inputs, get_signals_sequential, get_signals_parallel
-from .slicing_scheduler import SlicingScheduler
-from .utils import cleanup_memory
+from .model_utils import prepare_calibration_inputs
+from .utils import cleanup_memory, map_tensors
+from .mapping import Mapping
+from .workers import ComputeWorkers
 
 
 def rotate_attention_inputs(layer_adapter: LayerAdapter, Q: torch.Tensor) -> None:
     # Rotate the input projections exposed by the attention or mixer adapter.
     for W in layer_adapter.get_attention_inputs():
         dtype = W.weight.dtype
-        W_ = W.weight.to(device=config.device, dtype=torch.float64)
-        W.weight.data = torch.matmul(W_, Q).to(device="cpu", dtype=dtype)
+        W_ = W.weight.to(device=Q.device, dtype=torch.float64)
+        W.weight.data = torch.matmul(W_, Q).to(device=W.weight.device, dtype=dtype)
 
 
 def slice_attention_inputs(layer_adapter: LayerAdapter, new_embedding_dimension: int) -> None:
     # Slice the residual-input columns of the attention or mixer projections.
     for W in layer_adapter.get_attention_inputs():
-        W.weight.data = W.weight.data[:, :new_embedding_dimension]
+        W.weight.data = W.weight.data[:, :new_embedding_dimension].clone()
         W.in_features = new_embedding_dimension
 
 
@@ -36,19 +38,19 @@ def rotate_attention_output(layer_adapter: LayerAdapter, Q: torch.Tensor) -> Non
     W = layer_adapter.get_attention_output()
 
     dtype = W.weight.data.dtype
-    W_ = W.weight.data.to(device=config.device, dtype=torch.float64)
-    W.weight.data = torch.matmul(Q.T, W_).to(device="cpu", dtype=dtype)
+    W_ = W.weight.data.to(device=Q.device, dtype=torch.float64)
+    W.weight.data = torch.matmul(Q.T, W_).to(device=W.weight.device, dtype=dtype)
     if W.bias is not None:
-        b = W.bias.data.to(device=config.device, dtype=torch.float64)
-        W.bias.data = torch.matmul(Q.T, b).to(device="cpu", dtype=dtype)
+        b = W.bias.data.to(device=Q.device, dtype=torch.float64)
+        W.bias.data = torch.matmul(Q.T, b).to(device=W.weight.device, dtype=dtype)
 
 
 def slice_attention_output(layer_adapter: LayerAdapter, new_embedding_dimension: int) -> None:
     # Slice output matrix of the self-attention layer.
     W = layer_adapter.get_attention_output()
-    W.weight.data = W.weight.data[:new_embedding_dimension, :]
+    W.weight.data = W.weight.data[:new_embedding_dimension, :].clone()
     if W.bias is not None:
-        W.bias.data = W.bias.data[:new_embedding_dimension]
+        W.bias.data = W.bias.data[:new_embedding_dimension].clone()
     W.out_features = new_embedding_dimension
 
 
@@ -56,14 +58,14 @@ def rotate_mlp_input(layer_adapter: LayerAdapter, Q: torch.Tensor) -> None:
     # Rotate the MLP input weights.
     for W in layer_adapter.get_mlp_inputs():
         dtype = W.weight.dtype
-        W_ = W.weight.data.to(device=config.device, dtype=torch.float64)
-        W.weight.data = torch.matmul(W_, Q).to(device="cpu", dtype=dtype)
+        W_ = W.weight.data.to(device=Q.device, dtype=torch.float64)
+        W.weight.data = torch.matmul(W_, Q).to(device=W.weight.device, dtype=dtype)
 
 
 def slice_mlp_input(layer_adapter: LayerAdapter, new_embedding_dimension: int) -> None:
     # Slice the MLP input weights.
     for W in layer_adapter.get_mlp_inputs():
-        W.weight.data = W.weight.data[:, :new_embedding_dimension]
+        W.weight.data = W.weight.data[:, :new_embedding_dimension].clone()
         W.in_features = new_embedding_dimension
 
 
@@ -71,366 +73,165 @@ def rotate_mlp_output(layer_adapter: LayerAdapter, Q: torch.Tensor) -> None:
     # Rotate the MLP output weights and bias.
     W = layer_adapter.get_mlp_output()
     dtype = W.weight.data.dtype
-    W_ = W.weight.data.to(device=config.device, dtype=torch.float64)
-    W.weight.data = torch.matmul(Q.T, W_).to(device="cpu", dtype=dtype)
+    W_ = W.weight.data.to(device=Q.device, dtype=torch.float64)
+    W.weight.data = torch.matmul(Q.T, W_).to(device=W.weight.device, dtype=dtype)
     if W.bias is not None:
-        b = W.bias.data.to(device=config.device, dtype=torch.float64)
-        W.bias.data = torch.matmul(Q.T, b).to(device="cpu", dtype=dtype)
+        b = W.bias.data.to(device=Q.device, dtype=torch.float64)
+        W.bias.data = torch.matmul(Q.T, b).to(device=W.weight.device, dtype=dtype)
 
 
 def slice_mlp_output(layer_adapter: LayerAdapter, new_embedding_dimension: int) -> None:
     # Slice the MLP output weights and bias.
     W = layer_adapter.get_mlp_output()
-    W.weight.data = W.weight.data[:new_embedding_dimension, :]
+    W.weight.data = W.weight.data[:new_embedding_dimension, :].clone()
     if W.bias is not None:
-        W.bias.data = W.bias.data[:new_embedding_dimension]
+        W.bias.data = W.bias.data[:new_embedding_dimension].clone()
     W.out_features = new_embedding_dimension
 
 
-def rotate_embeddings(model_adapter: ModelAdapter, Q: torch.Tensor) -> None:
+def _rotate_rows(weight, basis, row_chunk_size=1024):
+    """Bound vocabulary rotation scratch space to a chunk, preserving storage placement."""
+    output = torch.empty((weight.shape[0], basis.shape[1]), dtype=weight.dtype, device=weight.device)
+    for start in range(0, weight.shape[0], row_chunk_size):
+        rows = weight[start:start + row_chunk_size].to(device=basis.device, dtype=torch.float64)
+        output[start:start + row_chunk_size] = (rows @ basis).to(device=weight.device, dtype=weight.dtype)
+    return output
+
+def rotate_embeddings(model_adapter: ModelAdapter, Q: torch.Tensor, new_embedding_dimension=None) -> None:
     # Rotate the embeddings.
-    for W in model_adapter.get_embeddings():
-        dtype = W.weight.data.dtype
-        W_ = W.weight.data.to(device=config.device, dtype=torch.float64)
-        W.weight.data = torch.matmul(W_, Q).to(device="cpu", dtype=dtype)
+    basis = Q if new_embedding_dimension is None else Q[:, :new_embedding_dimension]
+    for embedding in model_adapter.get_embeddings():
+        embedding.weight.data = _rotate_rows(embedding.weight.data, basis)
 
 
-def slice_embeddings(model_adapter: ModelAdapter, new_embedding_dimensions: dict[int, int]) -> None:
+def slice_embeddings(model_adapter: ModelAdapter, new_embedding_dimension: int) -> None:
     # Slice the embeddings.
-    for i, W in enumerate(model_adapter.get_embeddings()):
-        W.weight.data = W.weight.data[:, : new_embedding_dimensions[i]]
-        W.embedding_dim = new_embedding_dimensions[i]
+    for W in model_adapter.get_embeddings():
+        W.weight.data = W.weight.data[:, :new_embedding_dimension].clone()
+        W.embedding_dim = new_embedding_dimension
 
 
-def rotate_head(model_adapter: ModelAdapter, Q: torch.Tensor) -> None:
+def rotate_head(model_adapter: ModelAdapter, Q: torch.Tensor, new_embedding_dimension=None) -> None:
     # Rotate the head.
-    W = model_adapter.get_lm_head()
-    dtype = W.weight.data.dtype
-    W_ = W.weight.data.to(device=config.device, dtype=torch.float64)
-    W.weight.data = torch.matmul(W_, Q).to(device="cpu", dtype=dtype)
+    head = model_adapter.get_lm_head()
+    basis = Q if new_embedding_dimension is None else Q[:, :new_embedding_dimension]
+    head.weight.data = _rotate_rows(head.weight.data, basis)
 
 
 def slice_head(model_adapter: ModelAdapter, new_embedding_dimension: int) -> None:
     # Slice the head.
     lm_head = model_adapter.get_lm_head()
-    lm_head.weight.data = lm_head.weight.data[:, :new_embedding_dimension]
+    lm_head.weight.data = lm_head.weight.data[:, :new_embedding_dimension].clone()
     lm_head.in_features = new_embedding_dimension
 
 
+@torch.no_grad()
 def rotate_and_slice(
     model_adapter: ModelAdapter,
     dataloader: torch.utils.data.DataLoader[torch.Tensor],
-    slicing_scheduler: SlicingScheduler,
+    new_embedding_dimension: int,
     apply_mask: bool = True,
     final_orientation: str = 'pca',
+    *,
+    mapping=None,
 ) -> None:
+    """Compress a fused model using one shared basis and retained residual width.
+
+    Profile batches across devices and reduce raw moments, then rotate independent
+    layers. Embeddings, attention/MLP residual dimensions, and the head all retain
+    new_embedding_dimension features. The adapter determines the decoder architecture.
+    Multiple devices use persistent spawned processes, each retaining its own
+    calibration batches and only the current decoder layer. One device runs inline.
     """
-    Compress a fused model in place using one shared residual-stream basis.
+    if isinstance(new_embedding_dimension, bool) or not isinstance(new_embedding_dimension, int):
+        raise ValueError('new_embedding_dimension must be an integer')
+    if not 1 <= new_embedding_dimension <= model_adapter.hidden_size:
+        raise ValueError('new_embedding_dimension must be between 1 and hidden_size')
+    if final_orientation not in ('pca', 'random'):
+        raise ValueError('final_orientation must be pca or random')
 
-    Choose the sequential or parallel profiling path from the adapter. Both paths
-    use the first embedding width for all sliced components, including the head.
-    """
-    if model_adapter.parallel_blocks:
-        rotate_and_slice_parallel(model_adapter, dataloader, slicing_scheduler, apply_mask, final_orientation)
-    else:
-        rotate_and_slice_sequential(model_adapter, dataloader, slicing_scheduler, apply_mask, final_orientation)
+    mapping = mapping or Mapping()
+    devices = mapping.compute_devices
+    adapter = model_adapter
+    adapter.model.eval()
+    mapping.to_calibration(adapter)
+    layers = adapter.get_layers()
+    args, kwargs, masks, inps = [], [], [], []
+    with mapping.on_compute_device(adapter.get_pre_layer_modules()) as device:
+        for batch in dataloader:
+            hidden, batch_args, batch_kwargs = prepare_calibration_inputs(adapter, batch, device=device)
+            inps.append(hidden)
+            args.append(batch_args)
+            kwargs.append(batch_kwargs)
+            if apply_mask:
+                masks.append(batch.get('attention_mask', torch.ones(hidden.shape[:-1], dtype=torch.bool)))
 
+    if not args:
+        raise ValueError('Calibration requires at least one batch')
 
-@torch.no_grad()
-def rotate_and_slice_sequential(
-    model_adapter: ModelAdapter,
-    dataloader: torch.utils.data.DataLoader[torch.Tensor],
-    slicing_scheduler: SlicingScheduler,
-    apply_mask: bool = True,
-    final_orientation: str = 'pca',
-) -> None:
-    """
-    Profile sequential blocks, compute one global basis, then rotate and slice in place.
+    def normalized(moment):
+        trace = torch.trace(moment)
+        if not torch.isfinite(trace) or trace <= 0:
+            raise ValueError('Calibration scatter has nonpositive or nonfinite trace')
+        return moment / trace
 
-    Sum trace-normalized, uncentered scatter matrices from embeddings, pre-MLP
-    residuals, and layer outputs. Use the leading eigenvectors after damping, with
-    an optional random rotation inside the retained subspace. Apply one shared
-    width to embeddings, attention, MLPs, and the head, without shortcut matrices.
-    """
+    # Keep accumulated moments in system RAM, independently of compute placement.
+    moment = get_scatter_mat(inps, masks, device=devices[0]).cpu()
+    global_moment = normalized(moment)
+    del inps, moment
 
-    # Set up calibration data
-    logging.info("rotate_and_slice_sequential: Setting up calibration data")
+    shards = [list(range(i, len(args), len(devices))) for i in range(min(len(args), len(devices)))]
+    with ComputeWorkers(devices) as workers:
+        # Transport CPU tensors once; each worker retains and updates its own
+        # activations on its compute device. CUDA tensors never cross processes.
+        workers.call('initialize', [map_tensors((
+            [args[i] for i in indices], [kwargs[i] for i in indices],
+            [masks[i] for i in indices] if masks else [],
+        ), device='cpu') for indices in shards])
+        del args, kwargs, masks
 
-    model_adapter.model.eval()
-
-    layers = model_adapter.get_layers()
-
-    for layer_adapter in layers:
-        layer_adapter.layer.to("cpu")
-
-    model_adapter.get_lm_head().to("cpu")
-
-    for W in model_adapter.get_embeddings():
-        W.to(device=config.device)
-
-    base_model = getattr(model_adapter.model, "model", model_adapter.model)
-    if hasattr(base_model, "rotary_emb"):
-        base_model.rotary_emb.to(config.device)
-
-    inps, args, kwargs, ignore_masks = [], [], [], []
-    for batch in dataloader:
-        inp_batch, args_batch, kwargs_batch = get_layer0_inputs(model_adapter, batch)
-        inps.append(inp_batch)
-        args.append(args_batch)
-        kwargs.append(kwargs_batch)
-        if apply_mask:
-            ignore_masks.append(batch["attention_mask"])
-
-    for W in model_adapter.get_embeddings():
-        W.to("cpu")
-
-    if hasattr(base_model, "rotary_emb"):
-        base_model.rotary_emb.to("cpu")
-
-    slicing_scheduler.setup(hidden_size=model_adapter.hidden_size, layers_num=len(layers), parallel_blocks=False)
-
-    # Profiling model layers
-    logging.info("rotate_and_slice_sequential: Profiling model layers")
-
-    # Accumulate with normalization
-    C_inps_raw = get_scatter_mat(inps, ignore_masks)
-    C_global = C_inps_raw / torch.trace(C_inps_raw)
-    del inps, C_inps_raw
-
-    cleanup_memory()
-
-    for layer_idx, layer_adapter in enumerate(tqdm(layers, unit="layer", desc="Accumulating Covariance")):
-        layer_adapter.layer.to(device=config.device)
-
-        layer_kwargs = [
-            batch_kwargs["layer_kwargs"][layer_idx]
-            for batch_kwargs in kwargs
-        ]
-
-        mlp_ln_inputs, layer_outputs = get_signals_sequential(
-            layer_adapter, args, layer_kwargs
-        )
-
-        # Acculumate with normalization
-        C_mlp = get_scatter_mat(mlp_ln_inputs, ignore_masks)
-        C_out = get_scatter_mat(layer_outputs, ignore_masks)
-        C_global += C_mlp / torch.trace(C_mlp)
-        C_global += C_out / torch.trace(C_out)
-        del mlp_ln_inputs, C_mlp, C_out
-
-        for i, out in enumerate(layer_outputs):
-            clean_out = out.detach().to("cpu").clone()
-            args[i] = layer_adapter.get_updated_args(clean_out, args[i])
-            del clean_out
-
-        del layer_outputs
-
-        layer_adapter.layer.to("cpu")
-
+        for index, layer in enumerate(tqdm(layers, desc='Accumulating covariance', unit='layer', dynamic_ncols=True)):
+            # IPC moves CPU storage into shared memory. Send a temporary copy
+            # so profiling does not gradually move the entire model there.
+            replica = copy.deepcopy(layer) if len(devices) > 1 else layer
+            results = workers.call('profile', [(replica, index, adapter.parallel_blocks)] * len(shards))
+            del replica
+            for group in zip(*results):
+                # Normalize only after summing all shards, including uneven ones.
+                global_moment += normalized(sum(group))
+            del results, group
+        logging.info('Accumulating covariance done')
+        workers.call('finish_calibration', [()] * len(shards))
         cleanup_memory()
 
-    # Calculating the global PCA
-    logging.info("rotate_and_slice_sequential: Calculating the global PCA")
+        global_moment = global_moment.to(devices[0])
+        global_moment.diagonal().add_(0.01 * global_moment.diagonal().mean())
+        _, basis = torch.linalg.eigh(global_moment)
+        basis = basis.flip(-1)
+        del global_moment
+        if final_orientation == 'random':
+            basis = basis @ random_orthogonal_upper_left(basis.shape[0], new_embedding_dimension).to(basis.device)
 
-    damp = 0.01 * torch.mean(torch.diag(C_global))
-    diag = torch.arange(C_global.shape[-1]).to(device=config.device)
-    C_global[diag, diag] = C_global[diag, diag] + damp
-    X_eig = torch.linalg.eigh(C_global)
-    index = torch.argsort(X_eig[0], descending=True)
-    Q_global = X_eig[1][:, index]
-    Q_global = Q_global.to(device=config.device, dtype=torch.float64)
-
-    del args, kwargs, ignore_masks, C_global
-    cleanup_memory()
-
-    if final_orientation == 'random':
-        R = random_orthogonal_upper_left(Q_global.shape[0], slicing_scheduler.get_embedding_dimensions()[0])
-        Q_global = Q_global @ R.to(Q_global.device)
-
-    # Rotating and slicing layers
-    logging.info("rotate_and_slice_sequential: Rotating and slicing layers")
-
-    for W in model_adapter.get_embeddings():
-        W.to(device=config.device)
-
-    rotate_embeddings(model_adapter, Q_global)
-    slice_embeddings(model_adapter, slicing_scheduler.get_embedding_dimensions())
-
-    for W in model_adapter.get_embeddings():
-        W.to("cpu")
-
-    global_dim = slicing_scheduler.get_embedding_dimensions()[0]
-
-    for layer_adapter in tqdm(layers, unit="layer", desc="Slicing weights"):
-        layer = layer_adapter.layer
-        layer.to(device=config.device)
-
-        rotate_attention_inputs(layer_adapter, Q_global)
-        slice_attention_inputs(layer_adapter, global_dim)
-
-        rotate_attention_output(layer_adapter, Q_global)
-        slice_attention_output(layer_adapter, global_dim)
-
-        rotate_mlp_input(layer_adapter, Q_global)
-        slice_mlp_input(layer_adapter, global_dim)
-
-        rotate_mlp_output(layer_adapter, Q_global)
-        slice_mlp_output(layer_adapter, global_dim)
-
-        layer.to("cpu")
-        cleanup_memory()
-
-    model_adapter.get_lm_head().to(device=config.device)
-
-    rotate_head(model_adapter, Q_global)
-    slice_head(model_adapter, global_dim)
-
-    model_adapter.get_lm_head().to("cpu")
-
-    model_adapter.slicing_conf = slicing_scheduler.slicing_conf.clone()
-
-    logging.info("rotate_and_slice_sequential: Complete")
-
-
-@torch.no_grad()
-def rotate_and_slice_parallel(
-    model_adapter: ModelAdapter,
-    dataloader: torch.utils.data.DataLoader[torch.Tensor],
-    slicing_scheduler: SlicingScheduler,
-    apply_mask: bool = True,
-    final_orientation: str = 'pca',
-) -> None:
-    """
-    Profile parallel blocks, compute one global basis, then rotate and slice in place.
-
-    Sum trace-normalized, uncentered scatter matrices from embeddings and layer
-    outputs. Use the leading eigenvectors after damping, with an optional random
-    rotation inside the retained subspace. Apply one shared width throughout the
-    model, including the head, without shortcut matrices.
-    """
-
-    # Set up calibration data
-    logging.info("rotate_and_slice_parallel: Setting up calibration data")
-
-    model_adapter.model.eval()
-
-    layers = model_adapter.get_layers()
-
-    for layer_adapter in layers:
-        layer_adapter.layer.to("cpu")
-
-    model_adapter.get_lm_head().to("cpu")
-
-    for W in model_adapter.get_embeddings():
-        W.to(device=config.device)
-
-    inps, args, kwargs, ignore_masks = [], [], [], []
-    for batch in dataloader:
-        inp_batch, args_batch, kwargs_batch = get_layer0_inputs(model_adapter, batch)
-        inps.append(inp_batch)
-        args.append(args_batch)
-        kwargs.append(kwargs_batch)
-        if apply_mask:
-            ignore_masks.append(batch["attention_mask"])
-
-    for W in model_adapter.get_embeddings():
-        W.to("cpu")
-    
-    slicing_scheduler.setup(hidden_size=model_adapter.hidden_size, layers_num=len(layers), parallel_blocks=True)
-
-    # Profiling model layers
-    logging.info("rotate_and_slice_parallel: Profiling model layers")
-
-    # Accumulate with normalization
-    C_inps_raw = get_scatter_mat(inps, ignore_masks)
-    C_global = C_inps_raw / torch.trace(C_inps_raw)
-    del inps, C_inps_raw
-
-    cleanup_memory()
-
-    for layer_idx, layer_adapter in enumerate(tqdm(layers, unit="layer", desc="Accumulating Covariance")):
-        layer = layer_adapter.layer.to(device=config.device)
-
-        layer_kwargs = [batch_kwargs["layer_kwargs"][layer_idx] for batch_kwargs in kwargs]
-        outputs = get_signals_parallel(layer_adapter, args, layer_kwargs)
-
-        # Accumulate with normalization
-        C_layer = get_scatter_mat(outputs, ignore_masks)
-        C_global += C_layer / torch.trace(C_layer)
-        del C_layer
-
-        for i, out in enumerate(outputs):
-            clean_out = out.detach().to("cpu").clone()
-            args[i] = layer_adapter.get_updated_args(clean_out, args[i])
-            del clean_out
-
-        del outputs
-
-        layer_adapter.layer.to("cpu")
-
-        cleanup_memory()
-
-    # Calculating the global PCA
-    logging.info("rotate_and_slice_parallel: Calculating the global PCA")
-
-    damp = 0.01 * torch.mean(torch.diag(C_global))
-    diag = torch.arange(C_global.shape[-1]).to(device=config.device)
-    C_global[diag, diag] = C_global[diag, diag] + damp
-    X_eig = torch.linalg.eigh(C_global)
-    index = torch.argsort(X_eig[0], descending=True)
-    Q_global = X_eig[1][:, index]
-    Q_global = Q_global.to(device=config.device, dtype=torch.float64)
-
-    del args, kwargs, ignore_masks, C_global
-    cleanup_memory()
-
-    if final_orientation == 'random':
-        R = random_orthogonal_upper_left(Q_global.shape[0], slicing_scheduler.get_embedding_dimensions()[0])
-        Q_global = Q_global @ R.to(Q_global.device)
-
-    # Rotating and slicing layers
-    logging.info("rotate_and_slice_parallel: Rotating and slicing layers")
-
-    for W in model_adapter.get_embeddings():
-        W.to(device=config.device)
-
-    rotate_embeddings(model_adapter, Q_global)
-    slice_embeddings(model_adapter, slicing_scheduler.get_embedding_dimensions())
-
-    for W in model_adapter.get_embeddings():
-        W.to("cpu")
-
-    global_dim = slicing_scheduler.get_embedding_dimensions()[0]
-
-    for layer_adapter in tqdm(layers, unit="layer", desc="Slicing weights"):
-        layer = layer_adapter.layer
-        layer.to(device=config.device)
-
-        rotate_attention_inputs(layer_adapter, Q_global)
-        slice_attention_inputs(layer_adapter, global_dim)
-
-        rotate_attention_output(layer_adapter, Q_global)
-        slice_attention_output(layer_adapter, global_dim)
-
-        rotate_mlp_input(layer_adapter, Q_global)
-        slice_mlp_input(layer_adapter, global_dim)
-
-        rotate_mlp_output(layer_adapter, Q_global)
-        slice_mlp_output(layer_adapter, global_dim)
-
-        layer.to("cpu")
-        cleanup_memory()
-
-    model_adapter.get_lm_head().to(device=config.device)
-
-    rotate_head(model_adapter, Q_global)
-    slice_head(model_adapter, global_dim)
-
-    model_adapter.get_lm_head().to("cpu")
-
-    model_adapter.slicing_conf = slicing_scheduler.slicing_conf.clone()
-
-    logging.info("rotate_and_slice_parallel: Complete")
+        rotate_embeddings(adapter, basis, new_embedding_dimension)
+        slice_embeddings(adapter, new_embedding_dimension)
+        workers.call('set_basis', [(basis.cpu(),)] * len(devices))
+        for start in range(0, len(layers), len(devices)):
+            chunk = layers[start:start + len(devices)]
+            jobs = [(copy.deepcopy(layer) if len(devices) > 1 else layer, new_embedding_dimension)
+                    for layer in chunk]
+            results = workers.call('rotate', jobs)
+            del jobs
+            # Child processes replace parameter storage when slicing. Install their
+            # returned modules explicitly; those replacements cannot update the parent.
+            for index, layer in enumerate(results, start):
+                if len(devices) > 1:
+                    # Returned IPC tensors belong in ordinary RAM once installed.
+                    layer.layer._apply(lambda tensor: tensor.clone())
+                adapter.set_raw_layer_at(index, layer.layer)
+                layers[index] = layer
+        rotate_head(adapter, basis, new_embedding_dimension)
+        slice_head(adapter, new_embedding_dimension)
+    mapping.to_calibration(adapter)
 
 
 def random_orthogonal_upper_left(total_dim, upper_block_dim):
@@ -446,20 +247,22 @@ def random_orthogonal_upper_left(total_dim, upper_block_dim):
 
 @torch.no_grad()
 def get_scatter_mat(
-    X: list[torch.Tensor], ignore_masks: list[torch.Tensor] | None = None
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """
-    """
-    cleanup_memory()
+    X: list[torch.Tensor],
+    ignore_masks: list[torch.Tensor] | None = None,
+    *,
+    device: torch.device | None = None,
+) -> torch.Tensor:
+    """Uncentered second-moment sum without modifying stored calibration inputs."""
+    device = config.device if device is None else device
 
-    H = None
-    for idx, X_batch in enumerate(X):
+    total = None
+    for index, batch in enumerate(X):
+        values = batch.to(device=device, dtype=torch.float64)
         if ignore_masks:
-            X_batch[ignore_masks[idx] == 0] = 0
-
-        X_batch = X_batch.double().to(device=config.device)
-        H_batch = torch.sum(X_batch.mT @ X_batch, dim=0)  # sum over the batch dimension.
-        H = H_batch if H is None else H + H_batch
-        del X_batch, H_batch
-
-    return H
+            values = values.masked_fill(ignore_masks[index].to(device=device).unsqueeze(-1) == 0, 0)
+        flat = values.reshape(-1, values.shape[-1])
+        moment = flat.T @ flat
+        total = moment if total is None else total + moment
+    if total is None:
+        raise ValueError('Cannot compute scatter from empty calibration data')
+    return total
