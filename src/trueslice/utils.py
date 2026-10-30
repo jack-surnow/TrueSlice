@@ -96,3 +96,9 @@ def map_tensors(obj: T, device: torch.device | str | None = None, dtype: torch.d
         return value
 
     return transfer(obj)
+
+
+def sync_gpus() -> None:
+    """Sync all GPUs to make sure all operations are finished, needed for correct benchmarking of latency/throughput."""
+    for i in range(torch.cuda.device_count()):
+        torch.cuda.synchronize(device=i)

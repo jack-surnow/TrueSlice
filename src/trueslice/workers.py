@@ -9,7 +9,7 @@ import numpy as np
 import torch
 import torch.multiprocessing as mp
 
-from .model_utils import get_signals
+from .calibration import get_signals, get_scatter_mat
 from .utils import map_tensors
 
 
@@ -34,15 +34,13 @@ class _Worker:
             (args, kwargs, masks), device=self.device)
 
     def profile(self, layer, index, parallel):
-        from .rotate import get_scatter_mat
-
         try:
             layer.layer.to(self.device)
             moments = None
             for i, args in enumerate(self.args):
                 groups = get_signals(
                     layer, [args], [self.kwargs[i]['layer_kwargs'][index]],
-                    device=self.device, storage_device=self.device, capture_mlp_input=not parallel,
+                    device=self.device, capture_mlp_input=not parallel,
                 )
                 masks = [self.masks[i]] if self.masks else []
                 batch_moments = [get_scatter_mat(group, masks, device=self.device) for group in groups]
@@ -73,7 +71,7 @@ class _Worker:
         self.basis = basis.to(self.device)
 
     def rotate(self, layer, width):
-        from .rotate import (
+        from .compression import (
             rotate_attention_inputs, rotate_attention_output, rotate_mlp_input, rotate_mlp_output,
             slice_attention_inputs, slice_attention_output, slice_mlp_input, slice_mlp_output,
         )

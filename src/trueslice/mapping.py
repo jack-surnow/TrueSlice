@@ -143,7 +143,7 @@ class Mapping:
 
     def load(self, model_name, model_path=None, *, evaluate=False, **kwargs):
         """Load directly into evaluation placement, or onto CPU for calibration."""
-        from .hf_utils import get_model_and_tokenizer
+        from .model_loading import get_model_and_tokenizer
         # Prefix overrides need the actual module tree before dispatch. Automatic
         # maps and single-device evaluation still load directly to their devices.
         explicit_overrides = isinstance(self.eval_device_map, dict) and len(self.eval_device_map) > 1

@@ -10,7 +10,6 @@ import torch
 from torch import Tensor
 
 from . import utils
-from .config import config
 from .model_adapter import LayerAdapter, ModelAdapter
 
 
@@ -22,8 +21,6 @@ class _InputsCaptured(Exception):
 def prepare_calibration_inputs(
     model_adapter: ModelAdapter,
     batch: dict[str, Tensor],
-    *,
-    device: torch.device | str | None = None,
 ) -> tuple[Tensor, tuple, dict[str, Any]]:
     """Capture embeddings and per-decoder kwargs, preserving hybrid-model masks.
 
@@ -32,9 +29,9 @@ def prepare_calibration_inputs(
     modules intact preserves attributes used to select masks in hybrid models.
     The caller places preparation modules for the entire calibration dataset.
     Return CPU tensors for the initial handoff to workers, which then retain
-    activations on their compute devices. By default use the embedding device.
+    activations on their compute devices. Inputs follow the embedding device.
     """
-    device = model_adapter.get_embeddings()[0].weight.device if device is None else device
+    device = model_adapter.get_embeddings()[0].weight.device
     layers = model_adapter.get_layers()
     if not layers:
         raise ValueError('Input capture requires at least one decoder layer')
@@ -78,22 +75,21 @@ def get_signals(
     layer_args: list[tuple],
     layer_kwargs: list[dict[str, Any]],
     *,
-    device=None,
-    storage_device="cpu",
+    device: torch.device | str,
     capture_mlp_input: bool = False,
 ) -> list[list[torch.Tensor]]:
     """Run a decoder with optional observation of its intermediate MLP input.
 
     Return signal groups in moment-accumulation order: MLP inputs (when requested),
     then decoder outputs. The caller must place the layer on the compute device.
+    Inputs and captured signals stay on this worker's explicit compute device.
     """
-    device = config.device if device is None else device
     mlp_ln_inputs = []
     outputs = []
 
     def hook_fn(_, args: tuple, _output: Any) -> None:
         inp = args[0]  # Position in RMSN.forward args
-        mlp_ln_inputs.append(inp.detach().to(device=storage_device, copy=True))
+        mlp_ln_inputs.append(inp.detach().clone())
 
     hook = None
     if capture_mlp_input:
@@ -109,7 +105,7 @@ def get_signals(
             if isinstance(out, tuple):
                 out = out[layer_adapter.hidden_states_output_position]
 
-            outputs.append(out.detach().to(device=storage_device, copy=True))
+            outputs.append(out.detach().clone())
 
             if capture_mlp_input:
                 if len(mlp_ln_inputs) != i + 1:
@@ -124,3 +120,29 @@ def get_signals(
         if hook is not None:
             hook.remove()
     return [mlp_ln_inputs, outputs] if capture_mlp_input else [outputs]
+
+
+@torch.no_grad()
+def get_scatter_mat(
+    X: list[torch.Tensor],
+    ignore_masks: list[torch.Tensor] | None = None,
+    *,
+    device: torch.device | str,
+) -> torch.Tensor:
+    """Accumulate uncentered second moments on the selected compute device.
+
+    Transfer one batch at a time without modifying its stored inputs. Initial
+    embeddings may be on CPU even when their moments are computed on a GPU.
+    """
+    if not X:
+        raise ValueError('Cannot compute scatter from empty calibration data')
+
+    total = None
+    for index, batch in enumerate(X):
+        values = batch.to(device=device, dtype=torch.float64)
+        if ignore_masks:
+            values = values.masked_fill(ignore_masks[index].to(device=device).unsqueeze(-1) == 0, 0)
+        flat = values.reshape(-1, values.shape[-1])
+        moment = flat.T @ flat
+        total = moment if total is None else total + moment
+    return total

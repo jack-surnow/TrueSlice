@@ -10,9 +10,8 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
-from .config import config
 from .model_adapter import LayerAdapter, ModelAdapter
-from .model_utils import prepare_calibration_inputs
+from .calibration import prepare_calibration_inputs, get_scatter_mat
 from .utils import cleanup_memory, map_tensors
 from .mapping import Mapping
 from .workers import ComputeWorkers
@@ -157,9 +156,9 @@ def rotate_and_slice(
     mapping.to_calibration(adapter)
     layers = adapter.get_layers()
     args, kwargs, masks, inps = [], [], [], []
-    with mapping.on_compute_device(adapter.get_pre_layer_modules()) as device:
+    with mapping.on_compute_device(adapter.get_pre_layer_modules()):
         for batch in dataloader:
-            hidden, batch_args, batch_kwargs = prepare_calibration_inputs(adapter, batch, device=device)
+            hidden, batch_args, batch_kwargs = prepare_calibration_inputs(adapter, batch)
             inps.append(hidden)
             args.append(batch_args)
             kwargs.append(batch_kwargs)
@@ -243,26 +242,3 @@ def random_orthogonal_upper_left(total_dim, upper_block_dim):
     R = np.eye(total_dim)
     R[:upper_block_dim, :upper_block_dim] = Q
     return torch.from_numpy(R)
-
-
-@torch.no_grad()
-def get_scatter_mat(
-    X: list[torch.Tensor],
-    ignore_masks: list[torch.Tensor] | None = None,
-    *,
-    device: torch.device | None = None,
-) -> torch.Tensor:
-    """Uncentered second-moment sum without modifying stored calibration inputs."""
-    device = config.device if device is None else device
-
-    total = None
-    for index, batch in enumerate(X):
-        values = batch.to(device=device, dtype=torch.float64)
-        if ignore_masks:
-            values = values.masked_fill(ignore_masks[index].to(device=device).unsqueeze(-1) == 0, 0)
-        flat = values.reshape(-1, values.shape[-1])
-        moment = flat.T @ flat
-        total = moment if total is None else total + moment
-    if total is None:
-        raise ValueError('Cannot compute scatter from empty calibration data')
-    return total

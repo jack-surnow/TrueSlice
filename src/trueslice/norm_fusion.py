@@ -12,45 +12,30 @@ import torch.nn as nn
 from torch.nn import Linear, Module, Parameter
 
 from .model_adapter import ModelAdapter
-from .modules import RMSN
 
 
 AnyModule = TypeVar("AnyModule", bound=Module)
 
 
-def replace_modules(
-    root: Module,
-    type_to_replace: type[AnyModule],
-    new_module_factory: Callable[
-        [AnyModule, Optional[int]],
-        Module,
-    ],
-    replace_layers: bool,
-) -> None:
-    """Replace modules of given type using the supplied module factory.
-
-    Perform a depth-first search of a module hierarchy starting at root
-    and replace all instances of type_to_replace with modules created by
-    new_module_factory. Children of replaced modules are not processed.
-
-    Args:
-        root: the root of the module hierarchy where modules should be replaced
-        type_to_replace: a type instances of which will be replaced
-        new_module_factory: a function that given a module that should be replaced
-            produces a module to replace it with.
+class RMSN(torch.nn.Module):
     """
-    for name, module in root.named_children():
-        new_module = None
-        if isinstance(module, type_to_replace):
-            if replace_layers:  # layernorm_fusion.replace_layers case where transformer layers are replaced
-                new_module = new_module_factory(module, int(name))
-            else:  # layernorm_fusion.fuse_modules case where layernorms are fused
-                new_module = new_module_factory(module)
-        elif len(list(module.children())) > 0:
-            replace_modules(module, type_to_replace, new_module_factory, replace_layers)
+    This class implements the Root Mean Square Normalization (RMSN) layer.
+    We use the implementation from LLAMARMSNorm here:
+    https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L75
+    """
 
-        if new_module is not None:
-            setattr(root, name, new_module)
+    def __init__(self, mean_dim: int, eps: float = 1e-5):
+        super().__init__()
+        self.eps = eps
+        self.mean_dim = mean_dim
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        input_dtype = x.dtype
+        if x.dtype in (torch.float16, torch.bfloat16):
+            x = x.to(torch.float32)
+        variance = x.pow(2).sum(-1, keepdim=True) / self.mean_dim
+        x = x * torch.rsqrt(variance + self.eps)
+        return x.to(input_dtype)
 
 
 def fuse_modules(model_adapter: ModelAdapter) -> None:
@@ -96,14 +81,6 @@ def fuse_modules(model_adapter: ModelAdapter) -> None:
             bake_mean_into_linear(layer_adapter.get_mlp_output())
 
     fuse_ln_linear(model_adapter.get_pre_head_layernorm(), [model_adapter.get_lm_head()], weight_offset=weight_offset)
-
-    # replace_modules(
-    #     model_adapter.model,
-    #     model_adapter.original_layer_norm_type,
-    #     lambda _: RMSN(model_adapter.hidden_size),
-    #     replace_layers=False,
-    #     ignore_names=["q_norm", "k_norm"],
-    # )
 
     config = model_adapter.model.config
     eps = getattr(config, "rms_norm_eps", 
@@ -158,7 +135,7 @@ def fuse_ln_linear(layernorm: Module, linear_layers: Iterable[Linear], weight_of
 def restore_norms(model_adapter: ModelAdapter, d_new) -> None:
     logging.info("Restoring original norm layers with identity parameters")
     
-    model_param = next(iter(model_adapter.model.parameters()))
+    model_param = next(model_adapter.model.parameters())
     target_device = model_param.device
     target_dtype = model_param.dtype
 

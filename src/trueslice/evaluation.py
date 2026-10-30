@@ -13,7 +13,6 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from . import utils
-from .config import config
 from .model_adapter import ModelAdapter
 from .mapping import Mapping
 
@@ -23,20 +22,18 @@ def evaluate_ppl(
     model: torch.nn.Module,
     pad_token_id: int | None,
     testloader: DataLoader[dict[str, torch.Tensor]],
-    device: torch.device | str | None = None,
 ) -> float:
     """
     Evaluate token-weighted perplexity, excluding padding using attention masks.
-    It is expected that model is already on the correct device.
+    The model is already placed; inputs follow its embedding execution device.
     """
-    sync_gpus()
+    utils.sync_gpus()
 
     start_time = time.time()
 
     model.eval()
 
-    if device is None:
-        device = Mapping.input_device(model)
+    device = Mapping.input_device(model)
 
     total_nll = torch.zeros((), dtype=torch.float64)
     total_tokens = 0
@@ -74,7 +71,7 @@ def evaluate_ppl(
         raise ValueError("Perplexity evaluation requires at least one valid next-token target; no tokens were scored")
     ppl = torch.exp(total_nll / total_tokens)
 
-    sync_gpus()
+    utils.sync_gpus()
 
     elapsed = time.time() - start_time
     logging.info(
@@ -85,20 +82,21 @@ def evaluate_ppl(
     return ppl.item()
 
 
-def sync_gpus() -> None:
-    """Sync all GPUs to make sure all operations are finished, needed for correct benchmarking of latency/throughput."""
-    for i in range(torch.cuda.device_count()):
-        torch.cuda.synchronize(device=i)
-
-
 @torch.no_grad()
-def benchmark(model_adapter: ModelAdapter, input_batch: dict[str, torch.Tensor], warmup_steps: int = 5, prompt_tokens: int = 0) -> dict:
+def benchmark(
+    model_adapter: ModelAdapter,
+    input_batch: dict[str, torch.Tensor],
+    warmup_steps: int = 5,
+    prompt_tokens: int = 0,
+) -> dict:
     """Time cached, single-token forwards over a supplied sequence, starting with an empty cache.
 
     Inputs are teacher-forced (no sampling). Warmup uses a separate cache and is
     excluded, as are input transfers. Latency is seconds per batch decode step;
     throughput counts all decode tokens in the batch. With prompt_tokens > 0,
     separately time prompt prefill and greedy first-token selection (on device).
+    The model is already placed by Mapping; inputs follow its embedding device.
+    Sequence length includes both the prompt and the measured decode steps.
     """
     input_ids = input_batch["input_ids"]
     attention_mask = input_batch["attention_mask"]
@@ -111,8 +109,9 @@ def benchmark(model_adapter: ModelAdapter, input_batch: dict[str, torch.Tensor],
     if not bool(attention_mask.all()):
         raise ValueError("Benchmark inputs must be unpadded so every timed step represents a real token")
 
-    input_ids = input_ids.to(device=config.device)
-    attention_mask = attention_mask.to(device=config.device)
+    device = Mapping.input_device(model_adapter.model)
+    input_ids = input_ids.to(device=device)
+    attention_mask = attention_mask.to(device=device)
     batch_size, input_seq_len = input_ids.shape
     decode_tokens = input_seq_len - prompt_tokens
     model = model_adapter.model
@@ -149,23 +148,23 @@ def benchmark(model_adapter: ModelAdapter, input_batch: dict[str, torch.Tensor],
             output = forward_token(prompt_tokens + offset, past)
             past = output.past_key_values
             del output
-        sync_gpus()
+        utils.sync_gpus()
         past = None
         ttft_seconds = None
         if prompt_tokens:
-            sync_gpus()
+            utils.sync_gpus()
             start_time = time.perf_counter()
             past, first_token = prefill()
-            sync_gpus()
+            utils.sync_gpus()
             ttft_seconds = time.perf_counter() - start_time
             del first_token
         time_measurements = []
 
         for i in tqdm(range(prompt_tokens, input_seq_len), desc="Benchmarking"):
-            sync_gpus()
+            utils.sync_gpus()
             start_time = time.perf_counter()
             output = forward_token(i, past)
-            sync_gpus()
+            utils.sync_gpus()
             time_measurements.append(time.perf_counter() - start_time)
             # Preserve the native Cache object; never convert it to a list or
             # clear individual layers, which destroys the decoding context.
@@ -180,6 +179,7 @@ def benchmark(model_adapter: ModelAdapter, input_batch: dict[str, torch.Tensor],
             "latency": median_time,
             "throughput": batch_size / median_time,
             "batch_size": batch_size,
+            "seqlen": input_seq_len,
             "ntokens": decode_tokens,
             "prompt_tokens": prompt_tokens,
             "ttft_seconds": ttft_seconds,
@@ -251,6 +251,7 @@ def benchmark_batches(
 
     results = {
         "batch_size": batch_size,
+        "seqlen": sequence_length,
         "prompt_tokens": prompt_tokens,
         "nsamples": batch_size * len(batches),
         "ntokens": ntokens,

@@ -10,21 +10,21 @@ from .adapters.phi3_adapter import Phi3ModelAdapter
 from .adapters.qwen3_adapter import Qwen3ModelAdapter
 from .adapters.qwen3_5_adapter import Qwen3_5ModelAdapter
 
-from . import data_utils, gpu_utils, hf_utils, layernorm_fusion, rotate, utils
-from .data_utils import get_dataset, prepare_train_dataloader, prepare_test_dataloader
-from .gpu_utils import benchmark, evaluate_ppl
-from .hf_utils import get_model_and_tokenizer
-from .layernorm_fusion import fuse_modules
+from . import compression, data_loading, evaluation, model_loading, norm_fusion, utils
+from .data_loading import get_dataset, prepare_cal_dataloader, prepare_eval_dataloader
+from .evaluation import benchmark, evaluate_ppl
+from .model_loading import get_model_and_tokenizer
+from .norm_fusion import fuse_modules
 from .model_adapter import LayerAdapter, ModelAdapter
 from .mapping import Mapping
-from .rotate import rotate_and_slice
+from .compression import rotate_and_slice
 
 __all__ = [
-    "data_utils",
-    "gpu_utils",
-    "hf_utils",
-    "layernorm_fusion",
-    "rotate",
+    "data_loading",
+    "evaluation",
+    "model_loading",
+    "norm_fusion",
+    "compression",
     "utils",
 
     "LayerAdapter",
@@ -38,8 +38,8 @@ __all__ = [
     "Mapping",
 
     "get_dataset",
-    "prepare_train_dataloader",
-    "prepare_test_dataloader",
+    "prepare_cal_dataloader",
+    "prepare_eval_dataloader",
     "benchmark",
     "evaluate_ppl",
     "get_model_and_tokenizer",

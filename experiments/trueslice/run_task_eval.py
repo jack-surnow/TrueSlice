@@ -10,6 +10,10 @@ import logging
 import os
 from pathlib import Path
 
+import torch
+
+from trueslice import model_loading
+
 DEFAULT_TASKS = ["piqa", "winogrande", "hellaswag", "arc_easy", "arc_challenge", "ifeval", "mmlu", "gsm8k"]
 
 
@@ -49,17 +53,11 @@ def eval_arg_parser(argv=None):
 
 
 def load_model(args):
-    import torch
-
-    from trueslice import hf_utils
-    from trueslice.config import config
     dtype = {"auto": None, "fp16": torch.float16, "bf16": torch.bfloat16, "fp32": torch.float32}[args.dtype]
-    if args.device:
-        config.device = torch.device(args.device)
-    config.dtype = dtype
-    adapter, tokenizer = hf_utils.get_model_and_tokenizer(
+    device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
+    adapter, tokenizer = model_loading.get_model_and_tokenizer(
         args.model, args.model_path, token=args.hf_token, dtype=dtype,
-        device_map="auto" if args.distribute_model else str(config.device),
+        device_map="auto" if args.distribute_model else str(device),
     )
     # Sliced embeddings and output heads must not be re-tied by the harness.
     adapter.model.tie_weights = lambda *a, **kw: None

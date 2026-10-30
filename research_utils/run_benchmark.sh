@@ -125,15 +125,15 @@ for MODEL_ENTRY in "${MODELS[@]}"; do
                 echo "Calibration Dataset: ${DATASET}"
                 echo "======================================================================"
 
-                python experiments_trueslice/run_benchmark.py \
+                python experiments/trueslice/run_benchmark.py \
                     --model "${MODEL_ID}" \
                     --model-path "${BASE_PATH}/${TRUESLICE_PATH}" \
-                    --eval-dataset "${DATASET}" \
-                    --prompt-tokens "${EVAL_PROMPT_TOKENS}" --ntokens "${EVAL_NTOKENS}" \
-                    --nsamples "${EVAL_NSAMPLES}" \
+                    --dataset "${DATASET}" \
+                    --prompt-tokens "${EVAL_PROMPT_TOKENS}" --eval-seqlen "$((EVAL_PROMPT_TOKENS + EVAL_NTOKENS))" \
+                    --eval-nsamples "${EVAL_NSAMPLES}" \
                     --repetitions "${EVAL_REPETITIONS}" \
                     --warmup-steps "${EVAL_WARMUP_STEPS}" \
-                    --batch-size "${EVAL_BATCH_SIZE}" \
+                    --eval-batch-size "${EVAL_BATCH_SIZE}" \
                     --seed 42 \
                     --dtype "${DTYPE}" \
                     --results-file "${RESULTS_DIR}/${TRUESLICE_PATH}_${DATASET}.json" \
